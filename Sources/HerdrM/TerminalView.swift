@@ -371,10 +371,10 @@ private enum ClipboardFileError: LocalizedError {
 /// raw input path, bypassing key translation, and stay local while an IME
 /// composition is open.
 ///
-/// Mouse: one side owns each complete gesture. Plain gestures follow Ghostty's
-/// negotiated mouse capture and reach the TUI; Shift gestures stay local for
-/// terminal selection. Turning Mouse Reporting off also keeps the complete
-/// gesture local.
+/// Mouse: one side owns each complete gesture, decided by `MouseGestureRouter`.
+/// Under Ghostty's negotiated mouse capture a click reaches the TUI and a drag
+/// becomes a local selection; Shift and repeated clicks stay local from the
+/// press. Turning Mouse Reporting off keeps every gesture local.
 ///
 /// IME: Ghostty implements `NSTextInputClient` itself and renders the marked
 /// text in the grid; the only hook needed here is keeping ⌘/⌃ chords off the
@@ -389,9 +389,12 @@ final class LineBreakTerminalView: AppTerminalView {
     weak var attachedSurface: TerminalSurface?
     weak var processHost: TerminalProcessHost?
 
-    /// Fixed at mouse-down so press, motion and release cannot split between
+    /// Routes each press, drag and release so a gesture cannot split between
     /// the TUI and Ghostty's local selection.
-    private var gestureIsLocal = false
+    private var gestureRouter = MouseGestureRouter()
+    /// A captured press held back until the gesture shows itself as a click or
+    /// a drag; replayed at its original point either way.
+    private var heldPress: NSEvent?
     /// A locally handled Command-C must consume its matching release too;
     /// kitty report-events applications otherwise receive a release-only key.
     private var locallyConsumedCopyKeyCode: UInt16?
@@ -464,11 +467,26 @@ final class LineBreakTerminalView: AppTerminalView {
         event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
     }
 
-    private func routedMouseEvent(_ event: NSEvent) -> NSEvent {
+    /// Shift is what tells Ghostty (`mouse-shift-capture = never`) to keep a
+    /// captured gesture local; plain TUI gestures have it removed.
+    private func event(_ event: NSEvent, for route: MouseGestureRouter.Route) -> NSEvent {
         guard isMouseCaptured else { return event }
-        return gestureIsLocal
+        return route == .local
             ? event.addingShiftModifier()
             : event.removingShiftModifier()
+    }
+
+    private func perform(_ actions: [MouseGestureRouter.Action], with event: NSEvent) {
+        for action in actions {
+            switch action {
+            case .press(let route):
+                super.mouseDown(with: self.event(heldPress ?? event, for: route))
+            case .drag(let route):
+                super.mouseDragged(with: self.event(event, for: route))
+            case .release(let route):
+                super.mouseUp(with: self.event(event, for: route))
+            }
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -483,15 +501,22 @@ final class LineBreakTerminalView: AppTerminalView {
             pendingLinkClick = url
             return
         }
-        gestureIsLocal = !mouseReportingEnabled
-            || isSelectionGesture(event)
-            || !isMouseCaptured
-        super.mouseDown(with: routedMouseEvent(event))
+        // Ghostty focuses on the press; a held-back press must still do that.
+        window?.makeFirstResponder(self)
+        heldPress = event
+        let actions = gestureRouter.press(
+            at: event.locationInWindow,
+            clickCount: event.clickCount,
+            shift: isSelectionGesture(event),
+            captured: isMouseCaptured,
+            reportingEnabled: mouseReportingEnabled
+        )
+        perform(actions, with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard pendingLinkClick == nil else { return }
-        super.mouseDragged(with: routedMouseEvent(event))
+        perform(gestureRouter.drag(to: event.locationInWindow), with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -500,8 +525,8 @@ final class LineBreakTerminalView: AppTerminalView {
             Self.openClickedLink(url)
             return
         }
-        defer { gestureIsLocal = false }
-        super.mouseUp(with: routedMouseEvent(event))
+        defer { heldPress = nil }
+        perform(gestureRouter.release(), with: event)
     }
 
     // MARK: Links under mouse capture

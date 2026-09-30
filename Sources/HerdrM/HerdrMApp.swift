@@ -384,7 +384,7 @@ struct TerminalSettingsView: View {
                 Toggle(isOn: $mouseReporting) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Mouse reporting")
-                        Text("Forwards clicks and drags to TUI apps that ask for them. Turn off to always select text with the mouse — Shift-drag selects either way.")
+                        Text("Forwards clicks to TUI apps that ask for them, while a drag still selects text. Turn off to keep clicks local too — Shift-drag selects either way.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

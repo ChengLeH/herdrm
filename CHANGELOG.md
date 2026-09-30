@@ -18,6 +18,12 @@ the Sparkle update description — a release without a section here fails CI.
   Terminal turns it off.
 
 ### Fixed
+- **Drag to select, click to expand.** In a pane whose app asks for the mouse
+  (fullscreen Claude Code, or herdr's own attach client), a drag now selects
+  text in the terminal without Shift, while a plain click still reaches the
+  app, so Claude's collapsed messages and shell commands open by mouse. Double
+  and triple click select a word or line. Previously the Mouse reporting
+  setting had to choose between the two.
 - **Drops land in the agent you are looking at.** With several agents open,
   a file dropped on one agent was typed into another: every kept-alive
   terminal stayed registered for drops while hidden, and macOS gave the drop

@@ -473,6 +473,7 @@ struct SidebarView: View {
                 onClick: { model.selectAgent(entry.ref) },
                 onRename: { model.agentToRename = entry },
                 onPluginAction: { model.runPluginAction($0, for: entry) },
+                onGrazrAccounts: { model.grazrAccountsDevice = entry.device },
                 onMenuOpen: { Task { await model.loadPluginActions(deviceID: entry.device.id) } },
                 onClose: { model.requestClosePane(entry.ref, name: entry.title) },
                 onDragStart: { draggingAgentID = $0 },

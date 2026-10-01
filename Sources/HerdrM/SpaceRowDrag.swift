@@ -94,6 +94,7 @@ struct AgentRowDragHost: View {
     let onClick: () -> Void
     let onRename: () -> Void
     let onPluginAction: (PluginAction) -> Void
+    let onGrazrAccounts: () -> Void
     let onMenuOpen: () -> Void
     let onClose: () -> Void
     let onDragStart: (String) -> Void
@@ -127,12 +128,16 @@ struct AgentRowDragHost: View {
         if !pluginActions.isEmpty {
             items.append(.separator)
             for group in pluginActions {
-                items.append(.submenu(
-                    title: group.name,
-                    items: group.actions.map { action in
-                        .item(title: action.menuTitle, action: { onPluginAction(action) })
-                    }
-                ))
+                var actions: [SidebarContextMenuItem] = group.actions.map { action in
+                    .item(title: action.menuTitle, action: { onPluginAction(action) })
+                }
+                if group.pluginID == Grazr.pluginID {
+                    actions.insert(contentsOf: [
+                        .item(title: String(localized: "Accounts…"), action: onGrazrAccounts),
+                        .separator,
+                    ], at: 0)
+                }
+                items.append(.submenu(title: group.name, items: actions))
             }
         }
         items.append(.separator)

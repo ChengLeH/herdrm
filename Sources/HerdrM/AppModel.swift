@@ -189,6 +189,8 @@ final class AppModel: ObservableObject {
     @Published var spaceToRename: SpaceEntry?
     @Published var agentToRename: AgentEntry?
     @Published var terminalToRename: TerminalEntry?
+    /// The device whose grazr accounts window is open.
+    @Published var grazrAccountsDevice: Device?
     /// Transient action failures: shown as an alert, never by tearing down sessions.
     @Published var actionError: String?
 
@@ -1291,14 +1293,28 @@ final class AppModel: ObservableObject {
     /// herdr's own toasts never reach this window, so the command's last line
     /// comes back as a notification, or as an alert when it failed.
     func runPluginAction(_ action: PluginAction, for entry: AgentEntry) {
-        let device = entry.device
-        let service = service(for: device)
-        let target = PluginInvocationTarget(
-            workspaceID: entry.agent.workspaceID,
-            tabID: entry.agent.tabID,
-            paneID: entry.agent.paneID
+        runPluginAction(
+            action,
+            on: entry.device,
+            target: PluginInvocationTarget(
+                workspaceID: entry.agent.workspaceID,
+                tabID: entry.agent.tabID,
+                paneID: entry.agent.paneID
+            )
         )
+    }
+
+    /// `target` is the agent the action was picked for, nil from a window
+    /// that has none. `onFinish` runs once the command is done, either way.
+    func runPluginAction(
+        _ action: PluginAction,
+        on device: Device,
+        target: PluginInvocationTarget?,
+        onFinish: (() -> Void)? = nil
+    ) {
+        let service = service(for: device)
         Task {
+            defer { onFinish?() }
             do {
                 let logID = try await service.invokePluginAction(action, target: target)
                 // grazr's swap takes well under a second; give slow ones a while.

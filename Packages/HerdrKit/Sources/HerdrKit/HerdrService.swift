@@ -564,18 +564,19 @@ public actor HerdrService {
     /// Starts a plugin action on the server, the way herdr's own keybinding
     /// does, and returns the log id of the run. The command runs detached
     /// there; `pluginCommandLog` reports how it went.
-    public func invokePluginAction(_ action: PluginAction, target: PluginInvocationTarget) async throws -> String {
+    public func invokePluginAction(_ action: PluginAction, target: PluginInvocationTarget?) async throws -> String {
+        var context: [String: JSONValue] = ["invocation_source": .string("herdrm")]
+        if let target {
+            context["workspace_id"] = .string(target.workspaceID)
+            context["tab_id"] = .string(target.tabID)
+            context["focused_pane_id"] = .string(target.paneID)
+        }
         let result = try await client().request(
             method: "plugin.action.invoke",
             params: .object([
                 "plugin_id": .string(action.pluginID),
                 "action_id": .string(action.actionID),
-                "context": .object([
-                    "workspace_id": .string(target.workspaceID),
-                    "tab_id": .string(target.tabID),
-                    "focused_pane_id": .string(target.paneID),
-                    "invocation_source": .string("herdrm"),
-                ]),
+                "context": .object(context),
             ])
         )
         guard let logID = result["log"]?["log_id"]?.stringValue else {

@@ -2705,6 +2705,22 @@
         }
       }
     },
+    "Copied" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已拷贝"
+          }
+        }
+      }
+    },
     "Open Link" : {
       "localizations" : {
         "en" : {

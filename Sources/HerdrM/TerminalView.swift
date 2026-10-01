@@ -386,6 +386,7 @@ final class LineBreakTerminalView: AppTerminalView {
     // MARK: Keyboard
 
     override func keyDown(with event: NSEvent) {
+        hideLinkPopup()
         locallyConsumedCopyKeyCode = nil
         if hasMarkedText() {
             // Command/Control chords must stay with the IME until composition
@@ -459,6 +460,7 @@ final class LineBreakTerminalView: AppTerminalView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        hideLinkPopup()
         pendingLinkClick = nil
         if isMouseCaptured, mouseReportingEnabled,
            event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -506,6 +508,11 @@ final class LineBreakTerminalView: AppTerminalView {
     /// The URL printed under the click, reading the clicked row plus the rows
     /// it soft-wraps into (a long URL fills its row edge to edge).
     private func linkURL(at event: NSEvent) -> String? {
+        linkHit(atWindowPoint: event.locationInWindow)?.link.url
+    }
+
+    /// The cell grid under a window point, and the link printed there.
+    private func linkHit(atWindowPoint windowPoint: NSPoint) -> (link: TerminalLink, rowRect: NSRect)? {
         guard let viewport = processHost?.viewport,
               viewport.columns > 0, viewport.cellWidthPixels > 0, viewport.cellHeightPixels > 0,
               let text = processHost?.session.readViewportText()
@@ -513,15 +520,30 @@ final class LineBreakTerminalView: AppTerminalView {
         let scale = window?.backingScaleFactor ?? 2
         let cellWidth = CGFloat(viewport.cellWidthPixels) / scale
         let cellHeight = CGFloat(viewport.cellHeightPixels) / scale
-        let point = convert(event.locationInWindow, from: nil)
+        let point = convert(windowPoint, from: nil)
         let fromTop = isFlipped ? point.y : bounds.height - point.y
         let column = Int(((point.x - Self.gridPadding) / cellWidth).rounded(.down))
         let row = Int(((fromTop - Self.gridPadding) / cellHeight).rounded(.down))
         let lines = text.components(separatedBy: "\n")
-        return Self.url(in: lines, row: row, column: column, columns: Int(viewport.columns))
+        guard let link = Self.link(in: lines, row: row, column: column, columns: Int(viewport.columns))
+        else { return nil }
+        let rowTop = Self.gridPadding + CGFloat(row) * cellHeight
+        let rowRect = NSRect(
+            x: 0,
+            y: isFlipped ? rowTop : bounds.height - rowTop - cellHeight,
+            width: bounds.width,
+            height: cellHeight
+        )
+        return (link, rowRect)
     }
 
     static func url(in lines: [String], row: Int, column: Int, columns: Int) -> String? {
+        link(in: lines, row: row, column: column, columns: columns)?.url
+    }
+
+    /// The link printed at a cell: `text` exactly as shown (rows rejoined, no
+    /// line breaks) for copying, `url` normalized for opening.
+    static func link(in lines: [String], row: Int, column: Int, columns: Int) -> TerminalLink? {
         guard lines.indices.contains(row), column >= 0 else { return nil }
         let isFull = { (line: String) in displayWidth(line) >= columns }
         var first = row
@@ -555,7 +577,7 @@ final class LineBreakTerminalView: AppTerminalView {
             guard matched.contains("://") || matched.hasPrefix("mailto:"),
                   let url = match.url
             else { return nil }
-            return url.absoluteString
+            return TerminalLink(text: matched, url: url.absoluteString)
         }
         return nil
     }
@@ -577,6 +599,103 @@ final class LineBreakTerminalView: AppTerminalView {
         default:
             return 1
         }
+    }
+
+    // MARK: Link copy popup
+
+    // Resting the pointer on a link offers a Copy button. herdr redraws its
+    // pane row by row, so a link that wraps reaches Ghostty as separate lines
+    // and a dragged selection copies it with a break at every row. The button
+    // copies the link rejoined from its full-width rows instead.
+
+    private var linkPopup: LinkCopyPopup?
+    private var linkHoverTimer: Timer?
+    private var linkHoverPoint: NSPoint?
+    /// How long the pointer rests before the button appears, and how long it
+    /// may stray off the link before it goes.
+    private static let linkHoverDelay: TimeInterval = 0.35
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        // AppTerminalView routes drags through here too.
+        guard NSEvent.pressedMouseButtons == 0 else {
+            hideLinkPopup()
+            return
+        }
+        if let popup = linkPopup, popup.frame.contains(convert(event.locationInWindow, from: nil)) {
+            linkHoverTimer?.invalidate()
+            return
+        }
+        linkHoverPoint = event.locationInWindow
+        linkHoverTimer?.invalidate()
+        linkHoverTimer = Timer.scheduledTimer(withTimeInterval: Self.linkHoverDelay, repeats: false) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.updateLinkPopup() }
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        hideLinkPopup()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        hideLinkPopup()
+        super.scrollWheel(with: event)
+    }
+
+    override func setSurfaceVisible(_ visible: Bool) {
+        super.setSurfaceVisible(visible)
+        if !visible { hideLinkPopup() }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        if newSize != frame.size { hideLinkPopup() }
+        super.setFrameSize(newSize)
+    }
+
+    private func updateLinkPopup() {
+        guard let point = linkHoverPoint,
+              window?.isKeyWindow == true || window?.isMainWindow == true,
+              let hit = linkHit(atWindowPoint: point)
+        else {
+            hideLinkPopup()
+            return
+        }
+        if let popup = linkPopup, popup.link == hit.link { return }
+        showLinkPopup(for: hit.link, rowRect: hit.rowRect, pointerX: convert(point, from: nil).x)
+    }
+
+    private func showLinkPopup(for link: TerminalLink, rowRect: NSRect, pointerX: CGFloat) {
+        hideLinkPopup()
+        let popup = LinkCopyPopup(link: link) { [weak self] link in
+            self?.copyLink(link)
+        }
+        let size = popup.fittingSize
+        // Above the hovered row, or below it at the top edge; clear of the
+        // pointer so the link stays readable.
+        let above = isFlipped ? rowRect.minY - size.height - 2 : rowRect.maxY + 2
+        let below = isFlipped ? rowRect.maxY + 2 : rowRect.minY - size.height - 2
+        let fitsAbove = isFlipped ? above >= 0 : above + size.height <= bounds.height
+        let x = min(max(pointerX - size.width / 2, 4), max(bounds.width - size.width - 4, 4))
+        popup.frame = NSRect(origin: NSPoint(x: x, y: fitsAbove ? above : below), size: size)
+        addSubview(popup)
+        linkPopup = popup
+    }
+
+    private func hideLinkPopup() {
+        linkHoverTimer?.invalidate()
+        linkHoverTimer = nil
+        linkPopup?.removeFromSuperview()
+        linkPopup = nil
+    }
+
+    private func copyLink(_ link: TerminalLink) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(link.text, forType: .string)
+        linkPopup?.showCopied { [weak self] in self?.hideLinkPopup() }
     }
 
     // MARK: Accessibility
@@ -742,6 +861,7 @@ final class LineBreakTerminalView: AppTerminalView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window == nil { hideLinkPopup() }
         if window != nil { registerForDraggedTypes([.fileURL]) }
     }
 
@@ -1534,5 +1654,77 @@ struct ShellTerminalView: NSViewRepresentable {
             onExit = nil  // report once
             callback?(code)
         }
+    }
+}
+
+// MARK: - Link copy popup
+
+/// A link printed in the terminal: `text` exactly as shown, rows rejoined,
+/// and `url` normalized for opening.
+struct TerminalLink: Equatable {
+    let text: String
+    let url: String
+}
+
+/// The small Copy button shown over a link the pointer rests on.
+final class LinkCopyPopup: NSVisualEffectView {
+    let link: TerminalLink
+    private let onCopy: (TerminalLink) -> Void
+    private let button: NSButton
+
+    init(link: TerminalLink, onCopy: @escaping (TerminalLink) -> Void) {
+        self.link = link
+        self.onCopy = onCopy
+        button = NSButton(title: String(localized: "Copy"), target: nil, action: nil)
+        super.init(frame: .zero)
+        material = .popover
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor.separatorColor.cgColor
+
+        button.isBordered = false
+        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        button.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.imageHugsTitle = true
+        button.contentTintColor = .labelColor
+        button.toolTip = link.text
+        button.target = self
+        button.action = #selector(copyClicked)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            button.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            button.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            button.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+        ])
+        setAccessibilityLabel(String(localized: "Copy"))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // The terminal under the button must not see the click.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateLayer() {
+        super.updateLayer()
+        layer?.borderColor = NSColor.separatorColor.cgColor
+    }
+
+    @objc private func copyClicked() {
+        onCopy(link)
+    }
+
+    /// Confirms the copy in place, then lets the owner close the popup.
+    func showCopied(then done: @escaping () -> Void) {
+        button.title = String(localized: "Copied")
+        button.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+        button.isEnabled = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: done)
     }
 }

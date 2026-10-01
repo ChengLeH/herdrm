@@ -555,6 +555,45 @@ public actor HerdrService {
         )
     }
 
+    /// Every action of every enabled plugin on this device's server.
+    public func pluginActions() async throws -> [PluginAction] {
+        struct Envelope: Decodable { let actions: [PluginAction] }
+        return try await client().request(method: "plugin.action.list", as: Envelope.self).actions
+    }
+
+    /// Starts a plugin action on the server, the way herdr's own keybinding
+    /// does, and returns the log id of the run. The command runs detached
+    /// there; `pluginCommandLog` reports how it went.
+    public func invokePluginAction(_ action: PluginAction, target: PluginInvocationTarget) async throws -> String {
+        let result = try await client().request(
+            method: "plugin.action.invoke",
+            params: .object([
+                "plugin_id": .string(action.pluginID),
+                "action_id": .string(action.actionID),
+                "context": .object([
+                    "workspace_id": .string(target.workspaceID),
+                    "tab_id": .string(target.tabID),
+                    "focused_pane_id": .string(target.paneID),
+                    "invocation_source": .string("herdrm"),
+                ]),
+            ])
+        )
+        guard let logID = result["log"]?["log_id"]?.stringValue else {
+            throw HerdrError.malformedResponse("plugin.action.invoke returned no log_id")
+        }
+        return logID
+    }
+
+    /// The run `invokePluginAction` started, or nil once herdr has dropped it.
+    public func pluginCommandLog(pluginID: String, logID: String) async throws -> PluginCommandLog? {
+        struct Envelope: Decodable { let logs: [PluginCommandLog] }
+        return try await client().request(
+            method: "plugin.log.list",
+            params: .object(["plugin_id": .string(pluginID), "limit": .number(20)]),
+            as: Envelope.self
+        ).logs.first { $0.logID == logID }
+    }
+
     /// Makes a local file or folder readable by this device and returns the
     /// device-local path. Remote copies are streamed over SSH into the user's
     /// private cache; a folder keeps its name there.

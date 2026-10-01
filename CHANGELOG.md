@@ -5,6 +5,15 @@ on [Keep a Changelog](https://keepachangelog.com); versions follow semver.
 Release automation extracts the matching section for GitHub release notes and
 the Sparkle update description — a release without a section here fails CI.
 
+## [Unreleased]
+
+### Added
+- **Plugin actions on right-click.** An agent's context menu lists every herdr
+  plugin action on its device, one submenu per plugin, so grazr's account swap
+  runs from the sidebar. Herdr's prefix keys never reach an attached pane, so
+  this used to need a terminal on the device. The command's last line comes
+  back as a notification, or as an alert when it failed.
+
 ## [0.6.9] - 2026-09-23
 
 ### Added

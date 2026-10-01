@@ -469,8 +469,11 @@ struct SidebarView: View {
         .overlay {
             AgentRowDragHost(
                 entryID: entry.id,
+                pluginActions: model.session(entry.device.id).pluginActions,
                 onClick: { model.selectAgent(entry.ref) },
                 onRename: { model.agentToRename = entry },
+                onPluginAction: { model.runPluginAction($0, for: entry) },
+                onMenuOpen: { Task { await model.loadPluginActions(deviceID: entry.device.id) } },
                 onClose: { model.requestClosePane(entry.ref, name: entry.title) },
                 onDragStart: { draggingAgentID = $0 },
                 onDragEnd: {

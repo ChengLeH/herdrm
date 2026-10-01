@@ -1,9 +1,11 @@
 import AppKit
+import HerdrKit
 import SwiftUI
 
 enum SidebarContextMenuItem {
     case item(title: String, action: () -> Void)
     case destructive(title: String, action: () -> Void)
+    case submenu(title: String, items: [SidebarContextMenuItem])
     case separator
 }
 
@@ -16,6 +18,7 @@ struct SidebarRowDragHost: NSViewRepresentable {
     let menuItems: [SidebarContextMenuItem]
     let onClick: () -> Void
     var onDoubleClick: (() -> Void)?
+    var onMenuOpen: (() -> Void)?
     var allowsDrag = true
     var onDragStart: ((String) -> Void)?
     var onDragEnd: (() -> Void)?
@@ -44,6 +47,7 @@ struct SidebarRowDragHost: NSViewRepresentable {
         view.allowsDrag = allowsDrag
         view.onClick = onClick
         view.onDoubleClick = onDoubleClick
+        view.onMenuOpen = onMenuOpen
         view.onDragStart = onDragStart
         view.onDragEnd = onDragEnd
         view.onDropHover = onDropHover
@@ -86,8 +90,11 @@ struct SpaceRowDragHost: View {
 
 struct AgentRowDragHost: View {
     let entryID: String
+    let pluginActions: [PluginActionGroup]
     let onClick: () -> Void
     let onRename: () -> Void
+    let onPluginAction: (PluginAction) -> Void
+    let onMenuOpen: () -> Void
     let onClose: () -> Void
     let onDragStart: (String) -> Void
     let onDragEnd: () -> Void
@@ -99,19 +106,38 @@ struct AgentRowDragHost: View {
         SidebarRowDragHost(
             entryID: entryID,
             pasteboardType: SidebarRowDragNSView.agentPasteboardType,
-            menuItems: [
-                .item(title: String(localized: "Rename Agent…"), action: onRename),
-                .separator,
-                .destructive(title: String(localized: "Close Agent…"), action: onClose),
-            ],
+            menuItems: menuItems,
             onClick: onClick,
             onDoubleClick: onRename,
+            onMenuOpen: onMenuOpen,
             onDragStart: onDragStart,
             onDragEnd: onDragEnd,
             onDropHover: onDropHover,
             onHoverExit: onHoverExit,
             onDrop: onDrop
         )
+    }
+
+    /// herdr plugin actions sit between rename and close, one submenu per
+    /// plugin: grazr's account swap, agent-quota's refresh, …
+    private var menuItems: [SidebarContextMenuItem] {
+        var items: [SidebarContextMenuItem] = [
+            .item(title: String(localized: "Rename Agent…"), action: onRename),
+        ]
+        if !pluginActions.isEmpty {
+            items.append(.separator)
+            for group in pluginActions {
+                items.append(.submenu(
+                    title: group.name,
+                    items: group.actions.map { action in
+                        .item(title: action.menuTitle, action: { onPluginAction(action) })
+                    }
+                ))
+            }
+        }
+        items.append(.separator)
+        items.append(.destructive(title: String(localized: "Close Agent…"), action: onClose))
+        return items
     }
 }
 
@@ -157,6 +183,7 @@ final class SidebarRowDragNSView: NSView, NSDraggingSource {
     var allowsDrag = true
     var onClick: (() -> Void)?
     var onDoubleClick: (() -> Void)?
+    var onMenuOpen: (() -> Void)?
     var onDragStart: ((String) -> Void)?
     var onDragEnd: (() -> Void)?
     var onDropHover: ((Bool) -> Void)?
@@ -218,8 +245,13 @@ final class SidebarRowDragNSView: NSView, NSDraggingSource {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        onMenuOpen?()
+        return buildMenu(menuItems)
+    }
+
+    private func buildMenu(_ items: [SidebarContextMenuItem]) -> NSMenu {
         let menu = NSMenu()
-        for item in menuItems {
+        for item in items {
             switch item {
             case .separator:
                 menu.addItem(.separator())
@@ -231,6 +263,9 @@ final class SidebarRowDragNSView: NSView, NSDraggingSource {
                 let menuItem = menu.addItem(withTitle: title, action: #selector(runMenuItem(_:)), keyEquivalent: "")
                 menuItem.target = self
                 menuItem.representedObject = MenuAction(action)
+            case .submenu(let title, let children):
+                let menuItem = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
+                menuItem.submenu = buildMenu(children)
             }
         }
         return menu

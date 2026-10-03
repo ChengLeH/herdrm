@@ -211,7 +211,14 @@ public actor SSHTunnel {
         let errorOutput = Pipe()
         let errorBuffer = SSHErrorBuffer()
         errorOutput.fileHandleForReading.readabilityHandler = { handle in
-            errorBuffer.append(handle.availableData)
+            let data = handle.availableData
+            // EOF (ssh exited) stays readable forever; without this the handler
+            // spins a core on empty reads until the tunnel is next rebuilt.
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            errorBuffer.append(data)
         }
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = errorOutput

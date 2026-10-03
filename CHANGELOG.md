@@ -11,14 +11,38 @@ the Sparkle update description — a release without a section here fails CI.
 - The sidebar can be resized: drag the line between the sidebar and the
   terminal (200–480 pt), double-click it to go back to the default 260 pt. The
   width is remembered across launches, so long Space and Agent names fit.
-- **Dropped file paths end with a space**, the way cmux does, so the prompt
-  continues straight after them. This covers local drops and remote uploads.
-  Clipboard path pastes stay verbatim.
-- **Text drops.** Text dragged from an editor or a browser onto a pane pastes
-  as text. Previously the pane only accepted files.
+  (#101, thanks @jt-wang!)
 - **Copy on select.** Text selected with the mouse is copied to the clipboard on
   release, matching herdr's `copy_on_select`. A new toggle in Settings ›
-  Terminal turns it off.
+  Terminal turns it off. (#99, thanks @senadaruc!)
+- **Text drops.** Text dragged from an editor or a browser onto a pane pastes
+  as text. Previously the pane only accepted files. Dropped file paths now end
+  with a space, the way cmux does, so the prompt continues straight after them
+  (local drops and remote uploads; clipboard path pastes stay verbatim).
+  (#99, thanks @senadaruc!)
+- **Copy a long link in one piece.** Resting the pointer on a link in a
+  terminal shows a small Copy button above it; clicking it copies the whole
+  link with no line breaks. herdr redraws its pane row by row, so a link that
+  wraps reaches the terminal as separate lines, and selecting it copied a
+  break at every row edge — login and OAuth URLs then failed with errors like
+  "Unknown scope". The button rejoins the full-width rows the way ⌘-click
+  already did, and copies the link exactly as printed. (#105, thanks @senadaruc!)
+- **herdr plugin actions on right-click.** An agent's context menu lists every
+  herdr plugin action on its device, one submenu per plugin, so grazr's account
+  swap runs from the sidebar. Herdr's prefix keys never reach an attached pane,
+  so this used to need a terminal on the device. The command's last line comes
+  back as a notification, or as an alert when it failed. (#106, thanks
+  @senadaruc!)
+- **grazr accounts.** grazr › Accounts… lists every Claude account grazr
+  rotates through on that device, with what each has left in its 5-hour,
+  weekly and per-model windows and when they reset. The window also marks the
+  active account, accounts the server refused, and accounts missing from
+  `ACCOUNTS`, and swaps to the next account from a button. (#106, thanks
+  @senadaruc!)
+- The terminal now reports the cursor position to macOS accessibility clients
+  (inline autocomplete overlays, dictation), so tools that work at the insertion
+  point can read the prompt line being typed and draw beside the caret. (#108,
+  thanks @senadaruc!)
 
 ### Fixed
 - **Drag to select, click to expand.** In a pane whose app asks for the mouse
@@ -26,34 +50,25 @@ the Sparkle update description — a release without a section here fails CI.
   text in the terminal without Shift, while a plain click still reaches the
   app, so Claude's collapsed messages and shell commands open by mouse. Double
   and triple click select a word or line. Previously the Mouse reporting
-  setting had to choose between the two.
+  setting had to choose between the two. (#104, thanks @senadaruc!)
 - **Drops land in the agent you are looking at.** With several agents open,
   a file dropped on one agent was typed into another: every kept-alive
   terminal stayed registered for drops while hidden, and macOS gave the drop
-  to the topmost one. Only the visible terminal accepts drops now.
+  to the topmost one. Only the visible terminal accepts drops now. (#99, thanks
+  @senadaruc!)
 - **Sidebar stats lines no longer freeze on a pane herdr thinks is scrolled
   up.** Statusline plugins (herdr-agent-quota, grazr-style token scripts)
   skip every metadata update while herdr's server-side viewport for a pane is
   above the bottom — a viewport HerdrM never shows or scrolls, since ghostty
   owns the scrollback. Selecting a pane now snaps that viewport to the bottom,
-  so the model, context and usage lines keep updating.
-- **Copy a long link in one piece.** Resting the pointer on a link in a
-  terminal shows a small Copy button above it; clicking it copies the whole
-  link with no line breaks. herdr redraws its pane row by row, so a link that
-  wraps reaches the terminal as separate lines, and selecting it copied a
-  break at every row edge — login and OAuth URLs then failed with errors like
-  "Unknown scope". The button rejoins the full-width rows the way ⌘-click
-  already did, and copies the link exactly as printed.
-- **Plugin actions on right-click.** An agent's context menu lists every herdr
-  plugin action on its device, one submenu per plugin, so grazr's account swap
-  runs from the sidebar. Herdr's prefix keys never reach an attached pane, so
-  this used to need a terminal on the device. The command's last line comes
-  back as a notification, or as an alert when it failed.
-- **grazr accounts.** grazr › Accounts… lists every Claude account grazr
-  rotates through on that device, with what each has left in its 5-hour,
-  weekly and per-model windows and when they reset. The window also marks the
-  active account, accounts the server refused, and accounts missing from
-  `ACCOUNTS`, and swaps to the next account from a button.
+  so the model, context and usage lines keep updating. (#99, thanks @senadaruc!)
+- Image and file pastes now read the agent's kind from the live agent list, so
+  an agent that was attached before herdr detected its kind — or restarted in
+  the same pane — gets the right paste policy instead of a stale one. (#102,
+  thanks @briandw!)
+- The SSH tunnel's stderr handler no longer spins a CPU core after `ssh` exits:
+  an EOF-readable handle was looping on empty reads until the tunnel was next
+  rebuilt. (#103, thanks @senadaruc!)
 
 ## [0.6.9] - 2026-09-23
 

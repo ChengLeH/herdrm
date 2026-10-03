@@ -37,6 +37,13 @@ the Sparkle update description — a release without a section here fails CI.
   above the bottom — a viewport HerdrM never shows or scrolls, since ghostty
   owns the scrollback. Selecting a pane now snaps that viewport to the bottom,
   so the model, context and usage lines keep updating.
+- **Copy a long link in one piece.** Resting the pointer on a link in a
+  terminal shows a small Copy button above it; clicking it copies the whole
+  link with no line breaks. herdr redraws its pane row by row, so a link that
+  wraps reaches the terminal as separate lines, and selecting it copied a
+  break at every row edge — login and OAuth URLs then failed with errors like
+  "Unknown scope". The button rejoins the full-width rows the way ⌘-click
+  already did, and copies the link exactly as printed.
 
 ## [0.6.9] - 2026-09-23
 

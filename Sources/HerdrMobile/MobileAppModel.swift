@@ -341,6 +341,52 @@ final class MobileAppModel {
         DeviceKey.authorizedKeysLine(DeviceKey.ensure())
     }
 
+    /// This install's tailcat client public key ("nodekey:…") for a host's
+    /// allow.list. Loaded lazily by the tailcat UI so SSH-only installs never
+    /// create a client key.
+    private(set) var tailcatClientPublicKey: String?
+    /// Why the client key could not be read or replaced; shown in its place.
+    private(set) var tailcatClientKeyError: String?
+
+    func loadTailcatClientPublicKey() {
+        guard tailcatClientPublicKey == nil else { return }
+        do {
+            tailcatClientPublicKey = try TailcatClientKeyStore.publicKey()
+            tailcatClientKeyError = nil
+        } catch {
+            tailcatClientKeyError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+        }
+    }
+
+    /// Replaces the shared client key, then restarts every tailcat bridge so
+    /// it picks up the new identity: `ensureUp` hands back a live bridge
+    /// as-is, so each one must be torn down before the reconnect.
+    func regenerateTailcatClientKey() {
+        do {
+            tailcatClientPublicKey = try TailcatClientKeyStore.regenerate()
+            tailcatClientKeyError = nil
+        } catch {
+            tailcatClientKeyError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            return
+        }
+        let tailcatIDs = devices.filter(\.isTailcat).map(\.id)
+        let dropped = tailcatIDs.compactMap { sessions.removeValue(forKey: $0) }
+        let reconnectSelected = selectedDevice?.isTailcat == true
+        Task {
+            // Sequential on purpose: sessions close, then bridges go down,
+            // and only then does the selected device reconnect.
+            for session in dropped {
+                await session.disconnect()
+            }
+            for id in tailcatIDs {
+                await TailcatBridgeManager.shared.tearDown(deviceID: id)
+            }
+            if reconnectSelected {
+                connectSelected()
+            }
+        }
+    }
+
     func removeDevice(_ device: MobileDevice) {
         if let session = sessions.removeValue(forKey: device.id) {
             Task { await session.disconnect() }

@@ -84,18 +84,9 @@ struct SidebarView: View {
                         // never fired. Trailing New Space stays a sibling Button
                         // so it does not toggle the section.
                         groupHeader("Spaces", expanded: $spacesExpanded) {
-                            Button {
+                            SidebarHeaderButton(systemName: "folder.badge.plus", title: "New Space") {
                                 model.showNewSpace = true
-                            } label: {
-                                Image(systemName: "folder.badge.plus")
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(Theme.textGhost)
-                                    .frame(width: 20, height: 20)
-                                    .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .help("New Space")
-                            .focusEffectDisabled()
                         }
                         .accessibilityIdentifier("sidebar.section.spaces")
                     } content: {
@@ -114,8 +105,12 @@ struct SidebarView: View {
                     }
 
                     StickySection(background: { VisualEffectView(material: .sidebar) }) {
-                        groupHeader("Agents", expanded: $agentsExpanded)
-                            .accessibilityIdentifier("sidebar.section.agents")
+                        groupHeader("Agents", expanded: $agentsExpanded) {
+                            SidebarHeaderButton(systemName: "square.and.pencil", title: "New Agent") {
+                                model.showNewAgent = true
+                            }
+                        }
+                        .accessibilityIdentifier("sidebar.section.agents")
                     } content: {
                         if agentsExpanded {
                             if model.visibleAgents.isEmpty {
@@ -141,8 +136,12 @@ struct SidebarView: View {
 
                     if terminalsSectionVisible {
                         StickySection(background: { VisualEffectView(material: .sidebar) }) {
-                            groupHeader("Terminals", expanded: $terminalsExpanded)
-                                .accessibilityIdentifier("sidebar.section.terminals")
+                            groupHeader("Terminals", expanded: $terminalsExpanded) {
+                                SidebarHeaderButton(systemName: "terminal", title: "New Terminal") {
+                                    model.showNewTerminal = true
+                                }
+                            }
+                            .accessibilityIdentifier("sidebar.section.terminals")
                         } content: {
                             if terminalsExpanded {
                                 ForEach(model.visibleTerminals) { entry in
@@ -212,10 +211,6 @@ struct SidebarView: View {
         // equivalent for chrome (New Agent / New Terminal / Search). List
         // rows keep their focus ring for keyboard access.
         .focusEffectDisabled()
-    }
-
-    private func groupHeader(_ title: LocalizedStringKey, expanded: Binding<Bool>) -> some View {
-        groupHeader(title, expanded: expanded) { EmptyView() }
     }
 
     private func groupHeader<Trailing: View>(
@@ -591,6 +586,29 @@ struct SidebarView: View {
 }
 
 /// Small icon button that sits in the 28pt titlebar strip.
+/// The small "new" button at the right end of a section header; same icon as
+/// the matching New … action row above the list. `title` is the tooltip and
+/// what VoiceOver reads (an icon alone is read by its symbol name).
+struct SidebarHeaderButton: View {
+    let systemName: String
+    let title: LocalizedStringKey
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.textGhost)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+        .focusEffectDisabled()
+    }
+}
+
 struct TitlebarIconButton: View {
     let systemName: String
     let help: LocalizedStringKey

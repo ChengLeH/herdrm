@@ -2,6 +2,26 @@ import AppKit
 import HerdrKit
 import SwiftUI
 
+extension View {
+    /// The New Agent / New Terminal / New Space sheets, opened by the model's
+    /// flags. Separate from `RootView` so tests can attach them to a sidebar
+    /// with fake data, without starting a session.
+    func newItemSheets(model: AppModel) -> some View {
+        modifier(NewItemSheets(model: model))
+    }
+}
+
+private struct NewItemSheets: ViewModifier {
+    @ObservedObject var model: AppModel
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $model.showNewAgent) { NewAgentSheet(model: model) }
+            .sheet(isPresented: $model.showNewTerminal) { NewTerminalSheet(model: model) }
+            .sheet(isPresented: $model.showNewSpace) { NewSpaceSheet(model: model) }
+    }
+}
+
 struct RootView: View {
     // Owned by AppDelegate so it outlives the window — see AppDelegate in HerdrMApp.swift.
     @ObservedObject var model: AppModel
@@ -50,9 +70,7 @@ struct RootView: View {
         .frame(minWidth: 980, minHeight: 620)
         .onAppear { model.start() }
         .sheet(isPresented: $model.showAddDevice) { AddDeviceSheet(model: model) }
-        .sheet(isPresented: $model.showNewAgent) { NewAgentSheet(model: model) }
-        .sheet(isPresented: $model.showNewTerminal) { NewTerminalSheet(model: model) }
-        .sheet(isPresented: $model.showNewSpace) { NewSpaceSheet(model: model) }
+        .newItemSheets(model: model)
         .sheet(item: $model.spaceToRename) { entry in RenameSpaceSheet(model: model, entry: entry) }
         .sheet(item: $model.agentToRename) { entry in RenameAgentSheet(model: model, entry: entry) }
         .sheet(item: $model.terminalToRename) { entry in RenameTerminalSheet(model: model, entry: entry) }

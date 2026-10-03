@@ -5,6 +5,18 @@ on [Keep a Changelog](https://keepachangelog.com); versions follow semver.
 Release automation extracts the matching section for GitHub release notes and
 the Sparkle update description — a release without a section here fails CI.
 
+## [Unreleased]
+
+### Added
+- The Agents and Terminals headers in the sidebar now have a small New Agent /
+  New Terminal button at their right end, like the one by Spaces. You can start
+  an agent or a terminal from the list you are working in, without moving the
+  pointer and your attention up to the rows at the top of the sidebar.
+
+### Fixed
+- VoiceOver reads the sidebar's header buttons as New Space, New Agent and New
+  Terminal. The New Space button was announced by its icon's name, "New Folder".
+
 ## [0.6.10] - 2026-10-03
 
 ### Added

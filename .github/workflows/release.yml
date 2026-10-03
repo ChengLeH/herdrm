@@ -68,22 +68,35 @@ jobs:
               sys.exit(f"CHANGELOG.md has no section for {version} — add one before tagging")
           notes = m.group(1).strip()
           open("notes.md", "w").write(notes)
+
+          def inline(text):
+              # Sparkle renders release notes as HTML, so inline markdown has to
+              # be converted or it shows literally (**bold**, `code`). Escape
+              # first, then translate; code spans before emphasis so ** inside a
+              # span stays literal.
+              s = html.escape(text)
+              s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+              s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+              s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", s)
+              s = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', s)
+              return s
+
           out, in_ul = [], False
           for line in notes.splitlines():
               s = line.rstrip()
               if s.startswith("- "):
                   if not in_ul:
                       out.append("<ul>"); in_ul = True
-                  out.append("<li>" + html.escape(s[2:]) + "</li>")
+                  out.append("<li>" + inline(s[2:]) + "</li>")
               elif s.startswith("  ") and in_ul and out:
-                  out[-1] = out[-1][:-5] + " " + html.escape(s.strip()) + "</li>"
+                  out[-1] = out[-1][:-5] + " " + inline(s.strip()) + "</li>"
               else:
                   if in_ul:
                       out.append("</ul>"); in_ul = False
                   if s.startswith("### "):
                       out.append("<h3>" + html.escape(s[4:]) + "</h3>")
                   elif s:
-                      out.append("<p>" + html.escape(s) + "</p>")
+                      out.append("<p>" + inline(s) + "</p>")
           if in_ul:
               out.append("</ul>")
           open("notes.html", "w").write("\n".join(out))

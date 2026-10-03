@@ -27,16 +27,18 @@ public actor TailcatBridgeManager {
     }
 
     /// Ensures the bridge for a device is running and returns its local socket
-    /// path. Idempotent: a live bridge is reused as-is. The token is read from
-    /// the Keychain and handed straight to the Go runtime, so it never touches
-    /// a process list or environment block.
+    /// path. Idempotent: a live bridge is reused as-is. The token and the
+    /// install's client key (so a host's allow list can admit it) are read
+    /// from the Keychain and handed straight to the Go runtime, so they never
+    /// touch a process list or environment block.
     public func ensureUp(deviceID: UUID) async throws -> String {
         let stored = (try? TailcatCredentialStore.token(for: deviceID)) ?? nil
         guard let token = stored, !token.isEmpty else {
             throw HerdrError.tailcatTokenMissing
         }
+        let clientKey = try TailcatClientKeyStore.ensure()
         do {
-            return try await TailcatBridge.shared.ensureUp(deviceID: deviceID, token: token)
+            return try await TailcatBridge.shared.ensureUp(deviceID: deviceID, token: token, clientKey: clientKey)
         } catch let error as TailcatBridgeError {
             throw HerdrError.tailcatBridgeFailed(error.localizedDescription)
         }

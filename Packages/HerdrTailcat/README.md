@@ -16,8 +16,10 @@ or CI builds.
   the derived `-client` sibling). Consumed by both the gomobile face and the
   standalone CLI (`Tools/herdr-tailcat-bridge`).
 - `go/tailcatmobile` — the gomobile-bound package. Exports only bindable types
-  (`StartBridge(token, listenPath) error`, `StopBridge`, `BridgeError`), which
-  gomobile turns into the `Tailcatmobile*` Swift symbols.
+  (`StartBridge(token, clientKey, listenPath) error`, `StopBridge`,
+  `BridgeError`, `GenerateClientKey`, `ClientPublicKey`), which gomobile turns
+  into the `Tailcatmobile*` Swift symbols. `clientKey` is the app's persistent
+  "privkey:" identity, so a host's allow list can admit it.
 - `Sources/HerdrTailcat` — the `TailcatBridge` actor over those symbols.
 - `Artifacts/Tailcat.xcframework` — gomobile output: `ios-arm64`,
   `ios-arm64_x86_64-simulator`, `macos-arm64_x86_64`. gomobile emits a **static**

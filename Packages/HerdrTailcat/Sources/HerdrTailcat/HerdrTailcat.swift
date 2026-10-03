@@ -5,12 +5,15 @@ import Tailcat
 public enum TailcatBridgeError: Error, Sendable {
     /// The Go runtime refused to start the bridge (bad socket path, etc.).
     case startFailed(String)
+    /// A client key could not be generated or decoded.
+    case invalidClientKey(String)
 }
 
 extension TailcatBridgeError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .startFailed(let reason): return reason
+        case .invalidClientKey(let reason): return reason
         }
     }
 }
@@ -28,8 +31,8 @@ extension TailcatBridgeError: LocalizedError {
 /// The gomobile entry points (`TailcatmobileStartBridge` and friends) are
 /// process-global and thread-safe; this actor namespaces them per socket path
 /// and owns cleanup. It is deliberately free of HerdrKit types so HerdrKit can
-/// depend on it: the caller supplies the token (read from the Keychain) and
-/// the socket path.
+/// depend on it: the caller supplies the token and client key (read from the
+/// Keychain) and the socket path.
 public actor TailcatBridge {
     public static let shared = TailcatBridge()
 
@@ -49,14 +52,16 @@ public actor TailcatBridge {
     }
 
     /// Ensures the bridge for a device is up and returns its local socket path.
-    /// Idempotent: a live bridge is reused as-is. The token is handed to the Go
-    /// runtime directly — it never touches a process list or environment block.
-    public func ensureUp(deviceID: UUID, token: String) throws -> String {
+    /// Idempotent: a live bridge is reused as-is. `clientKey` is the
+    /// "privkey:" identity the host can allowlist ("" for an ephemeral key).
+    /// The token and key are handed to the Go runtime directly — they never
+    /// touch a process list or environment block.
+    public func ensureUp(deviceID: UUID, token: String, clientKey: String) throws -> String {
         let socketPath = Self.localSocketPath(deviceID: deviceID)
         if active.contains(socketPath) { return socketPath }
 
         var nsError: NSError?
-        guard TailcatmobileStartBridge(token, socketPath, &nsError) else {
+        guard TailcatmobileStartBridge(token, clientKey, socketPath, &nsError) else {
             throw TailcatBridgeError.startFailed(
                 nsError?.localizedDescription ?? "the embedded tailcat bridge failed to start"
             )
@@ -82,5 +87,25 @@ public actor TailcatBridge {
     public func tearDownAll() {
         for socketPath in active { TailcatmobileStopBridge(socketPath) }
         active.removeAll()
+    }
+
+    // MARK: - Client keys
+
+    /// A fresh client key in tailscale's "privkey:" text form — the same form
+    /// `tailcat genkey --client` stores.
+    public nonisolated static func generateClientKey() throws -> String {
+        var nsError: NSError?
+        let key = TailcatmobileGenerateClientKey(&nsError)
+        if let nsError { throw TailcatBridgeError.invalidClientKey(nsError.localizedDescription) }
+        return key
+    }
+
+    /// The "nodekey:" public key of a "privkey:" client key: the line a host
+    /// adds to its allow list (`tailcat serve --allow`, the plugin's allow.list).
+    public nonisolated static func publicKey(ofClientKey clientKey: String) throws -> String {
+        var nsError: NSError?
+        let publicKey = TailcatmobileClientPublicKey(clientKey, &nsError)
+        if let nsError { throw TailcatBridgeError.invalidClientKey(nsError.localizedDescription) }
+        return publicKey
     }
 }

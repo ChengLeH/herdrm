@@ -81,22 +81,34 @@ jobs:
               s = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', s)
               return s
 
-          out, in_ul = [], False
+          # Buffer each list item's full text before converting: a bullet can
+          # wrap across lines, and an emphasis span (**bold**) may open on the
+          # "- " line and close on a continuation — converting per line would
+          # miss it. Join continuations first, then run inline() on the whole.
+          out, in_ul, item = [], False, None
+          def flush_item():
+              global item
+              if item is not None:
+                  out.append("<li>" + inline(item) + "</li>")
+                  item = None
           for line in notes.splitlines():
               s = line.rstrip()
               if s.startswith("- "):
                   if not in_ul:
                       out.append("<ul>"); in_ul = True
-                  out.append("<li>" + inline(s[2:]) + "</li>")
-              elif s.startswith("  ") and in_ul and out:
-                  out[-1] = out[-1][:-5] + " " + inline(s.strip()) + "</li>"
+                  flush_item()
+                  item = s[2:]
+              elif s.startswith("  ") and item is not None:
+                  item += " " + s.strip()
               else:
+                  flush_item()
                   if in_ul:
                       out.append("</ul>"); in_ul = False
                   if s.startswith("### "):
                       out.append("<h3>" + html.escape(s[4:]) + "</h3>")
                   elif s:
                       out.append("<p>" + inline(s) + "</p>")
+          flush_item()
           if in_ul:
               out.append("</ul>")
           open("notes.html", "w").write("\n".join(out))

@@ -56,7 +56,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// The outcome of a plugin action run from the sidebar.
     func postPluginResult(title: String, body: String, deviceName: String) {
-        guard authorized else { return }
+        guard authorized, UserDefaults.standard.object(forKey: "notifications.enabled") as? Bool ?? true else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.subtitle = deviceName

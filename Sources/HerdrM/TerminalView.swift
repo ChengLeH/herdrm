@@ -590,9 +590,10 @@ final class LineBreakTerminalView: AppTerminalView {
 
     private var accessibilityText: String {
         let now = ProcessInfo.processInfo.systemUptime
-        // Dictation tools poll the focused element; one viewport read per
-        // half second is plenty.
-        if let cache = accessibilityTextCache, now - cache.time < 0.5 { return cache.text }
+        // One viewport read serves the burst of attribute queries a tool makes
+        // per poll. Kept short: an autocomplete overlay reads the text before
+        // the cursor on every keystroke, and a stale read misses the last key.
+        if let cache = accessibilityTextCache, now - cache.time < 0.05 { return cache.text }
         let text = processHost?.session.readViewportText() ?? ""
         accessibilityTextCache = (text, now)
         return text
@@ -618,10 +619,73 @@ final class LineBreakTerminalView: AppTerminalView {
         attachedSurface?.readSelection() ?? ""
     }
 
-    /// The insertion point sits at the end of the visible text: the terminal
-    /// cursor has no offset in this flat string that a caller could use.
+    /// The insertion point is the terminal cursor's cell in the viewport text,
+    /// so the text before it ends with what is being typed on the prompt line.
+    /// Without a cursor (no surface yet) it sits at the end of the text.
     override func accessibilitySelectedTextRange() -> NSRange {
-        NSRange(location: accessibilityNumberOfCharacters(), length: 0)
+        guard let cursor = cursorCell() else {
+            return NSRange(location: accessibilityNumberOfCharacters(), length: 0)
+        }
+        return NSRange(location: TerminalCaretGrid.offset(of: cursor.cell, in: accessibilityText), length: 0)
+    }
+
+    /// `AXBoundsForRange`: the cells of `range` in screen coordinates, placed
+    /// from the cursor's own cell, the one position ghostty reports (for IME).
+    /// A zero-length range is a zero-width caret box at that cell.
+    override func accessibilityFrame(for range: NSRange) -> NSRect {
+        guard let window, let cursor = cursorCell() else { return .zero }
+        let text = accessibilityText
+        let start = TerminalCaretGrid.cell(at: range.location, in: text)
+        let end = TerminalCaretGrid.cell(at: NSMaxRange(range), in: text)
+        let cellWidth = cursor.rect.width
+        let cellHeight = cursor.rect.height
+        // A later row is lower: a smaller y in AppKit's default space.
+        var rect = cursor.rect.offsetBy(
+            dx: CGFloat(start.column - cursor.cell.column) * cellWidth,
+            dy: CGFloat(start.row - cursor.cell.row) * cellHeight * (isFlipped ? 1 : -1)
+        )
+        rect.size.width = end.row == start.row ? CGFloat(end.column - start.column) * cellWidth : cellWidth
+        return window.convertToScreen(convert(rect, to: nil))
+    }
+
+    /// The cursor's cell and that cell's rect in view space. The position comes
+    /// from ghostty's IME point (via `firstRect`), which is zero-width while
+    /// nothing is selected; the cell size from the viewport.
+    private func cursorCell() -> (cell: TerminalCaretGrid.Cell, rect: NSRect)? {
+        guard attachedSurface != nil, let window, let viewport = processHost?.viewport,
+              let size = TerminalCaretGrid.cellSize(
+                  columns: Int(viewport.columns),
+                  rows: Int(viewport.rows),
+                  widthPixels: CGFloat(viewport.widthPixels),
+                  heightPixels: CGFloat(viewport.heightPixels),
+                  cellWidthPixels: CGFloat(viewport.cellWidthPixels),
+                  cellHeightPixels: CGFloat(viewport.cellHeightPixels),
+                  scale: window.backingScaleFactor,
+                  padding: Self.gridPadding
+              )
+        else { return nil }
+        let cellWidth = size.width
+        let cellHeight = size.height
+        let screenRect = firstRect(forCharacterRange: NSRange(location: 0, length: 0), actualRange: nil)
+        guard screenRect != .zero else { return nil }
+        // `firstRect` puts the rect's minY on the cursor cell's bottom edge.
+        let point = convert(window.convertFromScreen(screenRect), from: nil)
+        let bottomFromTop = isFlipped ? point.minY : bounds.height - point.minY
+        guard let cell = TerminalCaretGrid.cursorCell(
+            x: point.minX,
+            bottomFromTop: bottomFromTop,
+            cellWidth: cellWidth,
+            cellHeight: cellHeight,
+            padding: Self.gridPadding
+        ) else { return nil }
+        let top = Self.gridPadding + CGFloat(cell.row) * cellHeight
+        let rect = NSRect(
+            x: Self.gridPadding + CGFloat(cell.column) * cellWidth,
+            y: isFlipped ? top : bounds.height - top - cellHeight,
+            width: cellWidth,
+            height: cellHeight
+        )
+        return (cell, rect)
     }
 
     override func accessibilityString(for range: NSRange) -> String? {

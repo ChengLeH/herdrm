@@ -57,10 +57,12 @@ var (
 )
 
 // Start launches a bridge for one host and returns once its listeners are
-// bound. token is the tailcat connection token; listenPath is the local Unix
-// socket to serve the API on (the "-client" sibling is derived). A bridge
-// already serving listenPath is returned as-is, so Start is idempotent.
-func Start(token, listenPath string) (*Bridge, error) {
+// bound. token is the tailcat connection token; clientKey is the "privkey:"
+// client identity the server can allowlist ("" for an ephemeral key per
+// session); listenPath is the local Unix socket to serve the API on (the
+// "-client" sibling is derived). A bridge already serving listenPath is
+// returned as-is, so Start is idempotent.
+func Start(token, clientKey, listenPath string) (*Bridge, error) {
 	if token == "" {
 		return nil, fmt.Errorf("tailcat token is empty")
 	}
@@ -72,6 +74,14 @@ func Start(token, listenPath string) (*Bridge, error) {
 	}
 
 	client := tailcat.NewClient(tailcat.ConnBlob(token))
+	if clientKey != "" {
+		k, err := parseClientKey(clientKey)
+		if err != nil {
+			return nil, err
+		}
+		// Must be set before the client's first use.
+		client.Key = k
+	}
 	// The bridge runs inside the host app now; the netstack's per-packet debug
 	// log (Client.Logf defaults to log.Printf) would flood its stderr. Silence
 	// it — actionable failures are captured by setErr and surfaced via

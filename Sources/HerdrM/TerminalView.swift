@@ -121,9 +121,14 @@ enum GhosttyRuntime {
 
     /// Font settings are hot-applied; surfaces pick the change up without a
     /// rebuild, so this runs from every view update — the controller dedupes.
-    static func applyFontSettings(fontName: String, fontSize: Double, fontWeight: Double, lineSpacing: Double) {
+    static func applyFontSettings(
+        fontName: String, fontSize: Double, fontWeight: Double, lineSpacing: Double, copyOnSelect: Bool
+    ) {
         controller.setTerminalConfiguration(
-            fontConfiguration(fontName: fontName, fontSize: fontSize, fontWeight: fontWeight, lineSpacing: lineSpacing)
+            fontConfiguration(
+                fontName: fontName, fontSize: fontSize, fontWeight: fontWeight,
+                lineSpacing: lineSpacing, copyOnSelect: copyOnSelect
+            )
         )
     }
 
@@ -131,10 +136,15 @@ enum GhosttyRuntime {
         fontName: String,
         fontSize: Double,
         fontWeight: Double,
-        lineSpacing: Double
+        lineSpacing: Double,
+        copyOnSelect: Bool
     ) -> TerminalConfiguration {
         TerminalConfiguration { builder in
             builder.withFontSize(Float(fontSize))
+            // "clipboard" writes the system pasteboard on mouse release, like
+            // herdr's copy_on_select. Plain "true" would target only the
+            // selection clipboard, which libghostty-spm advertises and drops.
+            builder.withCustom("copy-on-select", copyOnSelect ? "clipboard" : "false")
             builder.withCursorStyle(.block)
             builder.withCursorStyleBlink(true)
             // The controller's base config is TerminalConfiguration.default,
@@ -333,6 +343,9 @@ private struct ClipboardFile: Sendable {
 private struct PendingAttachmentPaste: Sendable {
     let files: [ClipboardFile]
     let pathSyntax: AgentAttachmentPathSyntax
+    /// Text appended after the last path — a drop adds a space (cmux-style)
+    /// so the user can keep typing the prompt without inserting one.
+    var suffix: String = ""
 }
 
 private enum ClipboardFileError: LocalizedError {
@@ -358,10 +371,10 @@ private enum ClipboardFileError: LocalizedError {
 /// raw input path, bypassing key translation, and stay local while an IME
 /// composition is open.
 ///
-/// Mouse: one side owns each complete gesture. Plain gestures follow Ghostty's
-/// negotiated mouse capture and reach the TUI; Shift gestures stay local for
-/// terminal selection. Turning Mouse Reporting off also keeps the complete
-/// gesture local.
+/// Mouse: one side owns each complete gesture, decided by `MouseGestureRouter`.
+/// Under Ghostty's negotiated mouse capture a click reaches the TUI and a drag
+/// becomes a local selection; Shift and repeated clicks stay local from the
+/// press. Turning Mouse Reporting off keeps every gesture local.
 ///
 /// IME: Ghostty implements `NSTextInputClient` itself and renders the marked
 /// text in the grid; the only hook needed here is keeping ⌘/⌃ chords off the
@@ -376,9 +389,12 @@ final class LineBreakTerminalView: AppTerminalView {
     weak var attachedSurface: TerminalSurface?
     weak var processHost: TerminalProcessHost?
 
-    /// Fixed at mouse-down so press, motion and release cannot split between
+    /// Routes each press, drag and release so a gesture cannot split between
     /// the TUI and Ghostty's local selection.
-    private var gestureIsLocal = false
+    private var gestureRouter = MouseGestureRouter()
+    /// A captured press held back until the gesture shows itself as a click or
+    /// a drag; replayed at its original point either way.
+    private var heldPress: NSEvent?
     /// A locally handled Command-C must consume its matching release too;
     /// kitty report-events applications otherwise receive a release-only key.
     private var locallyConsumedCopyKeyCode: UInt16?
@@ -451,11 +467,26 @@ final class LineBreakTerminalView: AppTerminalView {
         event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
     }
 
-    private func routedMouseEvent(_ event: NSEvent) -> NSEvent {
+    /// Shift is what tells Ghostty (`mouse-shift-capture = never`) to keep a
+    /// captured gesture local; plain TUI gestures have it removed.
+    private func event(_ event: NSEvent, for route: MouseGestureRouter.Route) -> NSEvent {
         guard isMouseCaptured else { return event }
-        return gestureIsLocal
+        return route == .local
             ? event.addingShiftModifier()
             : event.removingShiftModifier()
+    }
+
+    private func perform(_ actions: [MouseGestureRouter.Action], with event: NSEvent) {
+        for action in actions {
+            switch action {
+            case .press(let route):
+                super.mouseDown(with: self.event(heldPress ?? event, for: route))
+            case .drag(let route):
+                super.mouseDragged(with: self.event(event, for: route))
+            case .release(let route):
+                super.mouseUp(with: self.event(event, for: route))
+            }
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -470,15 +501,22 @@ final class LineBreakTerminalView: AppTerminalView {
             pendingLinkClick = url
             return
         }
-        gestureIsLocal = !mouseReportingEnabled
-            || isSelectionGesture(event)
-            || !isMouseCaptured
-        super.mouseDown(with: routedMouseEvent(event))
+        // Ghostty focuses on the press; a held-back press must still do that.
+        window?.makeFirstResponder(self)
+        heldPress = event
+        let actions = gestureRouter.press(
+            at: event.locationInWindow,
+            clickCount: event.clickCount,
+            shift: isSelectionGesture(event),
+            captured: isMouseCaptured,
+            reportingEnabled: mouseReportingEnabled
+        )
+        perform(actions, with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard pendingLinkClick == nil else { return }
-        super.mouseDragged(with: routedMouseEvent(event))
+        perform(gestureRouter.drag(to: event.locationInWindow), with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -487,8 +525,8 @@ final class LineBreakTerminalView: AppTerminalView {
             Self.openClickedLink(url)
             return
         }
-        defer { gestureIsLocal = false }
-        super.mouseUp(with: routedMouseEvent(event))
+        defer { heldPress = nil }
+        perform(gestureRouter.release(), with: event)
     }
 
     // MARK: Links under mouse capture
@@ -803,14 +841,41 @@ final class LineBreakTerminalView: AppTerminalView {
     // Files and folders dropped from Finder become paths the program can read:
     // local paths on this Mac, or copies uploaded into the remote device's
     // attachment cache — the same pipeline as pasting copied files.
+    // Dropped text (from an editor or a browser) pastes as text.
+
+    //
+    // Only the terminal on screen takes drops. Kept-alive attaches stay in the
+    // window at zero opacity, and AppKit picks a drag destination from the
+    // view tree without regard to SwiftUI's opacity or hit testing — so a
+    // hidden terminal stacked above the visible one would swallow the drop.
+
+    /// Mirrors `setSurfaceVisible`: false while kept alive behind another view.
+    private var acceptsDrops = true
+
+    override func setSurfaceVisible(_ visible: Bool) {
+        super.setSurfaceVisible(visible)
+        guard visible != acceptsDrops else { return }
+        acceptsDrops = visible
+        updateDragRegistration()
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { registerForDraggedTypes([.fileURL]) }
+        updateDragRegistration()
+    }
+
+    private func updateDragRegistration() {
+        if window != nil, acceptsDrops {
+            registerForDraggedTypes([.fileURL, .string])
+        } else {
+            unregisterDraggedTypes()
+        }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        Self.fileURLs(in: sender.draggingPasteboard)?.isEmpty == false ? .copy : []
+        let pasteboard = sender.draggingPasteboard
+        if Self.fileURLs(in: pasteboard)?.isEmpty == false { return .copy }
+        return Self.hasText(in: pasteboard) ? .copy : []
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -818,11 +883,17 @@ final class LineBreakTerminalView: AppTerminalView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let fileURLs = Self.fileURLs(in: sender.draggingPasteboard), !fileURLs.isEmpty else {
+        let pasteboard = sender.draggingPasteboard
+        if let fileURLs = Self.fileURLs(in: pasteboard), !fileURLs.isEmpty {
+            window?.makeFirstResponder(self)
+            dropFiles(fileURLs)
+            return true
+        }
+        guard let text = pasteboard.string(forType: .string), !text.isEmpty else {
             return false
         }
         window?.makeFirstResponder(self)
-        dropFiles(fileURLs)
+        paste(text: text)
         return true
     }
 
@@ -841,15 +912,23 @@ final class LineBreakTerminalView: AppTerminalView {
             pathSyntax = .shellQuoted
         }
         if case .local = attachmentDeviceKind {
-            sendPastedText(fileURLs.map { pathSyntax.format($0.path) }.joined(separator: " "))
+            sendPastedText(
+                fileURLs.map { pathSyntax.format($0.path) }.joined(separator: " ") + Self.dropSuffix
+            )
             return
         }
         do {
-            enqueuePathPaste(try Self.clipboardFiles(from: fileURLs), pathSyntax: pathSyntax)
+            enqueuePathPaste(
+                try Self.clipboardFiles(from: fileURLs), pathSyntax: pathSyntax, suffix: Self.dropSuffix
+            )
         } catch {
             reportAttachmentError(error)
         }
     }
+
+    /// Dropped paths end with a space, like cmux, so the prompt can continue
+    /// straight after them. Clipboard path pastes stay verbatim.
+    private static let dropSuffix = " "
 
     // MARK: Paste and attachments
 
@@ -982,14 +1061,17 @@ final class LineBreakTerminalView: AppTerminalView {
 
     private func enqueuePathPaste(
         _ files: [ClipboardFile],
-        pathSyntax: AgentAttachmentPathSyntax
+        pathSyntax: AgentAttachmentPathSyntax,
+        suffix: String = ""
     ) {
         guard let attachmentService else {
             discardTemporaries(in: files)
             reportAttachmentError(ClipboardFileError.transferUnavailable)
             return
         }
-        pendingUploads.append(PendingAttachmentPaste(files: files, pathSyntax: pathSyntax))
+        pendingUploads.append(
+            PendingAttachmentPaste(files: files, pathSyntax: pathSyntax, suffix: suffix)
+        )
         guard uploadTask == nil else { return }
         onAttachmentUploadingChanged?(true)
         uploadTask = Task { [weak self] in
@@ -1011,7 +1093,9 @@ final class LineBreakTerminalView: AppTerminalView {
                     devicePaths.append(try await service.stageAttachment(from: file.localURL))
                 }
                 try Task.checkCancellation()
-                sendPastedText(devicePaths.map(paste.pathSyntax.format).joined(separator: " "))
+                sendPastedText(
+                    devicePaths.map(paste.pathSyntax.format).joined(separator: " ") + paste.suffix
+                )
             } catch is CancellationError {
                 break
             } catch {
@@ -1211,6 +1295,8 @@ struct AttachTerminalView: NSViewRepresentable {
     /// When false, mouse drags always select text locally even if the TUI
     /// requested mouse reporting (Shift+drag bypasses it either way).
     var mouseReporting: Bool = true
+    /// Copies a local selection to the clipboard on mouse release.
+    var copyOnSelect: Bool = true
     /// False while kept alive behind another view: Ghostty then stops drawing
     /// frames for it (output is still parsed), so busy background agents do
     /// not cost full-window Metal renders.
@@ -1302,7 +1388,8 @@ struct AttachTerminalView: NSViewRepresentable {
             fontWeight: fontWeight,
             lineSpacing: lineSpacing,
             dark: dark,
-            mouseReporting: mouseReporting
+            mouseReporting: mouseReporting,
+            copyOnSelect: copyOnSelect
         )
     }
 
@@ -1362,13 +1449,15 @@ struct AttachTerminalView: NSViewRepresentable {
 func applyTerminalAppearance(
     _ view: LineBreakTerminalView,
     fontName: String, fontSize: Double, thinStrokes _: Bool,
-    fontWeight: Double, lineSpacing: Double, dark: Bool, mouseReporting: Bool
+    fontWeight: Double, lineSpacing: Double, dark: Bool, mouseReporting: Bool,
+    copyOnSelect: Bool
 ) {
     GhosttyRuntime.applyFontSettings(
         fontName: fontName,
         fontSize: fontSize,
         fontWeight: fontWeight,
-        lineSpacing: lineSpacing
+        lineSpacing: lineSpacing,
+        copyOnSelect: copyOnSelect
     )
     view.mouseReportingEnabled = mouseReporting
     // Colors are theme-only; keep the rest above this early return.
@@ -1459,6 +1548,7 @@ struct ShellTerminalView: NSViewRepresentable {
     var lineSpacing: Double = TerminalDefaults.defaultLineSpacing
     var dark: Bool = false
     var mouseReporting: Bool = true
+    var copyOnSelect: Bool = true
     /// See `AttachTerminalView.isVisible`.
     var isVisible: Bool = true
     var onAttachmentError: (String) -> Void = { _ in }
@@ -1498,7 +1588,8 @@ struct ShellTerminalView: NSViewRepresentable {
             fontWeight: fontWeight,
             lineSpacing: lineSpacing,
             dark: dark,
-            mouseReporting: mouseReporting
+            mouseReporting: mouseReporting,
+            copyOnSelect: copyOnSelect
         )
 
         let command = HerdrService(device: device, autoStartLocalServer: false)
@@ -1534,7 +1625,8 @@ struct ShellTerminalView: NSViewRepresentable {
             fontWeight: fontWeight,
             lineSpacing: lineSpacing,
             dark: dark,
-            mouseReporting: mouseReporting
+            mouseReporting: mouseReporting,
+            copyOnSelect: copyOnSelect
         )
     }
 

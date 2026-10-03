@@ -319,6 +319,7 @@ struct TerminalSettingsView: View {
     @AppStorage(TerminalDefaults.fontWeightKey) private var fontWeight = TerminalDefaults.defaultFontWeight
     @AppStorage(TerminalDefaults.lineSpacingKey) private var lineSpacing = TerminalDefaults.defaultLineSpacing
     @AppStorage("terminal.mouseReporting") private var mouseReporting = true
+    @AppStorage("terminal.copyOnSelect") private var copyOnSelect = true
 
     @State private var importMessage: String?
     @State private var importSucceeded = false
@@ -383,7 +384,17 @@ struct TerminalSettingsView: View {
                 Toggle(isOn: $mouseReporting) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Mouse reporting")
-                        Text("Forwards clicks and drags to TUI apps that ask for them. Turn off to always select text with the mouse — Shift-drag selects either way.")
+                        Text("Forwards clicks to TUI apps that ask for them, while a drag still selects text. Turn off to keep clicks local too — Shift-drag selects either way.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Toggle(isOn: $copyOnSelect) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Copy on select")
+                        Text("Copies text to the clipboard as soon as you finish selecting it with the mouse, like herdr's copy_on_select.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -398,6 +409,7 @@ struct TerminalSettingsView: View {
                         lineSpacing = TerminalDefaults.defaultLineSpacing
                         thinStrokes = true
                         mouseReporting = true
+                        copyOnSelect = true
                         importMessage = nil
                     }
                     Button("Import from Ghostty…") { importFromGhostty() }

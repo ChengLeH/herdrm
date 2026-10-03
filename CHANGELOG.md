@@ -11,6 +11,32 @@ the Sparkle update description — a release without a section here fails CI.
 - The sidebar can be resized: drag the line between the sidebar and the
   terminal (200–480 pt), double-click it to go back to the default 260 pt. The
   width is remembered across launches, so long Space and Agent names fit.
+- **Dropped file paths end with a space**, the way cmux does, so the prompt
+  continues straight after them. This covers local drops and remote uploads.
+  Clipboard path pastes stay verbatim.
+- **Text drops.** Text dragged from an editor or a browser onto a pane pastes
+  as text. Previously the pane only accepted files.
+- **Copy on select.** Text selected with the mouse is copied to the clipboard on
+  release, matching herdr's `copy_on_select`. A new toggle in Settings ›
+  Terminal turns it off.
+
+### Fixed
+- **Drag to select, click to expand.** In a pane whose app asks for the mouse
+  (fullscreen Claude Code, or herdr's own attach client), a drag now selects
+  text in the terminal without Shift, while a plain click still reaches the
+  app, so Claude's collapsed messages and shell commands open by mouse. Double
+  and triple click select a word or line. Previously the Mouse reporting
+  setting had to choose between the two.
+- **Drops land in the agent you are looking at.** With several agents open,
+  a file dropped on one agent was typed into another: every kept-alive
+  terminal stayed registered for drops while hidden, and macOS gave the drop
+  to the topmost one. Only the visible terminal accepts drops now.
+- **Sidebar stats lines no longer freeze on a pane herdr thinks is scrolled
+  up.** Statusline plugins (herdr-agent-quota, grazr-style token scripts)
+  skip every metadata update while herdr's server-side viewport for a pane is
+  above the bottom — a viewport HerdrM never shows or scrolls, since ghostty
+  owns the scrollback. Selecting a pane now snaps that viewport to the bottom,
+  so the model, context and usage lines keep updating.
 
 ## [0.6.9] - 2026-09-23
 

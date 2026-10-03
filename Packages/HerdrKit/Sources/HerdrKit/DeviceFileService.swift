@@ -234,6 +234,24 @@ public actor DeviceFileService {
         }
     }
 
+    /// Runs a `/bin/sh` command on the device and returns its stdout: a local
+    /// process, or one SSH exec on the same connection settings as the rest.
+    public func run(_ command: String, timeout: TimeInterval = 30) async throws -> Data {
+        switch device.kind {
+        case .tailcat:
+            throw HerdrError.fileOperationFailed("commands are not supported over a tailcat tunnel")
+        case .local:
+            return try await SSHFileProcess.capture(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", command],
+                environment: ProcessInfo.processInfo.environment,
+                timeout: timeout
+            )
+        case .ssh:
+            return try await runSSHData(command: command, timeout: timeout)
+        }
+    }
+
     private func absolutePath(_ requestedPath: String) async throws -> String {
         let trimmed = requestedPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = trimmed.isEmpty ? "~" : trimmed

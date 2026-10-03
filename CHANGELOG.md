@@ -44,6 +44,16 @@ the Sparkle update description — a release without a section here fails CI.
   break at every row edge — login and OAuth URLs then failed with errors like
   "Unknown scope". The button rejoins the full-width rows the way ⌘-click
   already did, and copies the link exactly as printed.
+- **Plugin actions on right-click.** An agent's context menu lists every herdr
+  plugin action on its device, one submenu per plugin, so grazr's account swap
+  runs from the sidebar. Herdr's prefix keys never reach an attached pane, so
+  this used to need a terminal on the device. The command's last line comes
+  back as a notification, or as an alert when it failed.
+- **grazr accounts.** grazr › Accounts… lists every Claude account grazr
+  rotates through on that device, with what each has left in its 5-hour,
+  weekly and per-model windows and when they reset. The window also marks the
+  active account, accounts the server refused, and accounts missing from
+  `ACCOUNTS`, and swaps to the next account from a button.
 
 ## [0.6.9] - 2026-09-23
 

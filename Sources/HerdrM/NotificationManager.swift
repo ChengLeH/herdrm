@@ -54,6 +54,21 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// The outcome of a plugin action run from the sidebar.
+    func postPluginResult(title: String, body: String, deviceName: String) {
+        guard authorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.subtitle = deviceName
+        content.body = body
+        let request = UNNotificationRequest(
+            identifier: "plugin-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     // Show banners even while the app is frontmost (herdr already suppresses
     // "done" for the pane you are actively watching).
     func userNotificationCenter(

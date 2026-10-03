@@ -47,6 +47,9 @@ struct DeviceSessionState {
     var panes: [PaneInfo] = []
     var agentCatalog: AgentCatalogState = .loading
     var attachmentCapabilities = AgentAttachmentCapabilityRegistry()
+    /// The agent row's context menu, grouped per plugin. Empty until loaded,
+    /// or when the device runs no plugin with actions.
+    var pluginActions: [PluginActionGroup] = []
 }
 
 struct SSHAuthenticationRequest: Identifiable {
@@ -203,6 +206,8 @@ final class AppModel: ObservableObject {
     @Published var spaceToRename: SpaceEntry?
     @Published var agentToRename: AgentEntry?
     @Published var terminalToRename: TerminalEntry?
+    /// The device whose grazr accounts window is open.
+    @Published var grazrAccountsDevice: Device?
     /// Transient action failures: shown as an alert, never by tearing down sessions.
     @Published var actionError: String?
 
@@ -734,6 +739,7 @@ final class AppModel: ObservableObject {
                     }
                     await self.refresh(device.id)
                     await self.loadAgentCatalog(deviceID: device.id, using: service)
+                    await self.loadPluginActions(deviceID: device.id)
                     eventSubscriptions: while !Task.isCancelled {
                         let subscribedPaneIDs = self.statusSubscriptionPaneIDs(device.id)
                         let stream = try await service.events(statusPaneIDs: subscribedPaneIDs)
@@ -804,6 +810,15 @@ final class AppModel: ObservableObject {
     /// search PATH (or a Settings override). SSH hosts keep their server-owned
     /// catalog; `agent.start` validates in the target pane instead. Manifests
     /// also feed the attachment-capability registry (paste path vs upload).
+    /// Plugins come and go without a reconnect, so the context menu also
+    /// reloads this each time it opens, for the next time.
+    func loadPluginActions(deviceID: UUID) async {
+        guard let service = services[deviceID] else { return }
+        // An older server without plugin RPCs keeps an empty menu section.
+        guard let actions = try? await service.pluginActions() else { return }
+        sessions[deviceID]?.pluginActions = PluginActionGroup.menu(actions)
+    }
+
     private func loadAgentCatalog(deviceID: UUID, using service: HerdrService) async {
         sessions[deviceID]?.agentCatalog = .loading
         do {
@@ -1291,6 +1306,59 @@ final class AppModel: ObservableObject {
                 await refresh(entry.device.id)
             } catch {
                 actionError = actionErrorMessage(error, device: entry.device)
+            }
+        }
+    }
+
+    /// Runs a plugin action on the agent's device, as if picked in herdr itself.
+    /// herdr's own toasts never reach this window, so the command's last line
+    /// comes back as a notification, or as an alert when it failed.
+    func runPluginAction(_ action: PluginAction, for entry: AgentEntry) {
+        runPluginAction(
+            action,
+            on: entry.device,
+            target: PluginInvocationTarget(
+                workspaceID: entry.agent.workspaceID,
+                tabID: entry.agent.tabID,
+                paneID: entry.agent.paneID
+            )
+        )
+    }
+
+    /// `target` is the agent the action was picked for, nil from a window
+    /// that has none. `onFinish` runs once the command is done, either way.
+    func runPluginAction(
+        _ action: PluginAction,
+        on device: Device,
+        target: PluginInvocationTarget?,
+        onFinish: (() -> Void)? = nil
+    ) {
+        let service = service(for: device)
+        Task {
+            defer { onFinish?() }
+            do {
+                let logID = try await service.invokePluginAction(action, target: target)
+                // grazr's swap takes well under a second; give slow ones a while.
+                for _ in 0..<60 {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                    guard let log = try await service.pluginCommandLog(pluginID: action.pluginID, logID: logID),
+                          log.isFinished
+                    else { continue }
+                    if log.succeeded {
+                        NotificationManager.shared.postPluginResult(
+                            title: action.title,
+                            body: log.summary ?? String(localized: "Done"),
+                            deviceName: device.name
+                        )
+                    } else {
+                        actionError = log.summary.map { "\(action.title): \($0)" }
+                            ?? String(localized: "\(action.title) failed")
+                    }
+                    break
+                }
+                await refresh(device.id)
+            } catch {
+                actionError = actionErrorMessage(error, device: device)
             }
         }
     }

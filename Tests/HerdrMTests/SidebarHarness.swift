@@ -22,14 +22,16 @@ final class SidebarHarness {
     /// - Parameters: number of fake workspaces / agents shown in the sidebar.
     /// - Parameter agentTokens: pane `tokens` map given to every fake agent
     ///   (what grazr / herdr-agent-quota publish); nil leaves the agents untagged.
-    init(spaces: Int, agents: Int, terminals: Int = 0, agentTokens: [String: String]? = nil, width: CGFloat = 260, height: CGFloat = 600) throws {
+    /// - Parameter sheets: attach the app's New Agent / New Terminal / New Space
+    ///   sheets, so a button press can be followed to the sheet it opens.
+    init(spaces: Int, agents: Int, terminals: Int = 0, agentTokens: [String: String]? = nil, sheets: Bool = false, width: CGFloat = 260, height: CGFloat = 600) throws {
         model = try Self.fakeModel(spaces: spaces, agents: agents, terminals: terminals, agentTokens: agentTokens)
-        root = NSHostingView(rootView: AnyView(
-            SidebarView(model: model, collapsed: .constant(false), width: width).frame(width: width, height: height)
-        ))
+        let sidebar = SidebarView(model: model, collapsed: .constant(false), width: width).frame(width: width, height: height)
+        root = NSHostingView(rootView: sheets ? AnyView(sidebar.newItemSheets(model: model)) : AnyView(sidebar))
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .darkAqua)
+        window.title = "SidebarHarness \(UUID().uuidString)" // AccessibilityProbe finds the window by title
         window.contentView = root
         window.orderFrontRegardless()
         root.layoutSubtreeIfNeeded()
@@ -38,7 +40,10 @@ final class SidebarHarness {
         try learnHeaderSignatures()
     }
 
-    deinit { window.close() }
+    deinit {
+        window.sheets.forEach { window.endSheet($0) }
+        window.close()
+    }
 
     // MARK: - Actions
 
@@ -61,7 +66,40 @@ final class SidebarHarness {
         settle(seconds: 0.6) // disclosure toggle animates for 0.2s
     }
 
+    /// Click the small button at the right end of whatever header is pinned.
+    func clickPinnedHeaderButton() throws {
+        let r = scroll.contentView.convert(scroll.contentView.bounds, to: nil)
+        try click(at: NSPoint(x: r.maxX - 28, y: r.maxY - 14))
+        settle(seconds: 0.6)
+    }
+
+    /// Press a section header's button the way VoiceOver does, by its name.
+    func pressHeaderButton(_ header: Header, named name: String) throws {
+        let button = try XCTUnwrap(headerButtonElements(header).first { $0.name == name }, "no \(name) button on \(header)")
+        AccessibilityProbe.press(button)
+        settle(seconds: 0.8) // a sheet slides in
+    }
+
     // MARK: - Observations
+
+    /// Names VoiceOver reads for the buttons on a section header.
+    func headerButtons(_ header: Header) -> [String] {
+        headerButtonElements(header).compactMap(\.name)
+    }
+
+    /// Names of the buttons on the sheet attached to the sidebar's window; empty when there is none.
+    var sheetButtons: [String] {
+        let all = AccessibilityProbe.elements(in: window)
+        guard let start = all.firstIndex(where: { $0.role == "AXSheet" }) else { return [] }
+        return all[start...].filter { $0.role == "AXButton" }.compactMap(\.name)
+    }
+
+    private func headerButtonElements(_ header: Header) -> [AccessibilityProbe.Element] {
+        AccessibilityProbe.elements(in: window).filter {
+            $0.role == "AXButton" && $0.identifier == "sidebar.section.\(header.rawValue)"
+        }
+    }
+
 
     /// The header currently pinned at the top of the list, by its rendered title.
     var pinnedHeader: Header? {
@@ -98,6 +136,9 @@ final class SidebarHarness {
             var json: [String: Any] = ["agent": "claude", "name": "Agent \(i + 1)", "workspace_id": "ws-0", "tab_id": "tab-\(i)", "pane_id": "pane-\(i)"]
             if let agentTokens { json["tokens"] = agentTokens }
             return try decode(AgentInfo.self, json)
+        }
+        state.panes = try (0..<terminals).map { i in
+            try decode(PaneInfo.self, ["pane_id": "term-pane-\(i)", "terminal_id": "term-\(i)", "workspace_id": "ws-0", "tab_id": "term-tab-\(i)"])
         }
         model.sessions[device.id] = state
         return model

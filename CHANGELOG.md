@@ -12,10 +12,20 @@ the Sparkle update description — a release without a section here fails CI.
   New Terminal button at their right end, like the one by Spaces. You can start
   an agent or a terminal from the list you are working in, without moving the
   pointer and your attention up to the rows at the top of the sidebar.
+  (#109, thanks @jt-wang!)
+- **Persistent tailcat client key.** herdrm now keeps one tailcat client key per
+  install (generated on first use, stored in the Keychain as this-device-only),
+  so a host that allowlists clients can admit this Mac with a single `allow.list`
+  line. The Add Device › Tailcat sheet and a new Settings › Tailcat tab show the
+  client public key with a Copy button and the allow-list steps, and can
+  regenerate the key behind a confirmation. Previously every session used a fresh
+  ephemeral key, so an allowlisted host could never admit herdrm. (#110, closes
+  #100, thanks @stu43005!)
 
 ### Fixed
 - VoiceOver reads the sidebar's header buttons as New Space, New Agent and New
   Terminal. The New Space button was announced by its icon's name, "New Folder".
+  (#109, thanks @jt-wang!)
 
 ## [0.6.10] - 2026-10-03
 

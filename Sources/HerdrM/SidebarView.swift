@@ -585,7 +585,6 @@ struct SidebarView: View {
     }
 }
 
-/// Small icon button that sits in the 28pt titlebar strip.
 /// The small "new" button at the right end of a section header; same icon as
 /// the matching New … action row above the list. `title` is the tooltip and
 /// what VoiceOver reads (an icon alone is read by its symbol name).
@@ -609,6 +608,7 @@ struct SidebarHeaderButton: View {
     }
 }
 
+/// Small icon button that sits in the 28pt titlebar strip.
 struct TitlebarIconButton: View {
     let systemName: String
     let help: LocalizedStringKey

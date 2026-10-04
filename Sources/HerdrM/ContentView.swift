@@ -799,6 +799,14 @@ struct AddDeviceSheet: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(Theme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Spacer().frame(height: 8)
+                    SheetSectionLabel("CLIENT PUBLIC KEY")
+                    TailcatClientKeyRow(publicKey: model.tailcatClientPublicKey)
+                    Text("If the host uses an allow list, add this key to it so only this Mac can connect: one key per line in `allow.list` under `herdr plugin config-dir herdr.tailcat`, then `herdr plugin action invoke herdr.tailcat.restart`.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onAppear { model.loadTailcatClientPublicKey() }
                 }
             }
             .padding(16)
@@ -835,6 +843,37 @@ struct AddDeviceSheet: View {
             .padding(.vertical, 12)
         }
         .frame(width: 400)
+    }
+}
+
+/// The tailcat client public key as selectable text with a Copy button.
+/// Shared by the Add Device sheet and the Tailcat settings tab.
+struct TailcatClientKeyRow: View {
+    let publicKey: String?
+    @State private var copied = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(publicKey ?? "—")
+                .font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled)
+                // A nodekey is wider than the sheet; wrap rather than truncate
+                // so the whole key stays visible and selectable.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(copied ? String(localized: "Copied") : String(localized: "Copy")) {
+                guard let publicKey else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(publicKey, forType: .string)
+                copied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    copied = false
+                }
+            }
+            .controlSize(.small)
+            .disabled(publicKey == nil)
+        }
     }
 }
 

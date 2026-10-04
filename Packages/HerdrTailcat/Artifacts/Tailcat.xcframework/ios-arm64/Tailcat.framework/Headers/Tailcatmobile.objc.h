@@ -18,13 +18,26 @@ refused tunnel dial) for the bridge on listenPath, or "".
 FOUNDATION_EXPORT NSString* _Nonnull TailcatmobileBridgeError(NSString* _Nullable listenPath);
 
 /**
+ * ClientPublicKey returns the "nodekey:" public key of a "privkey:" client
+key — the line the host adds to its allow list.
+ */
+FOUNDATION_EXPORT NSString* _Nonnull TailcatmobileClientPublicKey(NSString* _Nullable clientKey, NSError* _Nullable* _Nullable error);
+
+/**
+ * GenerateClientKey returns a fresh "privkey:" client key for StartBridge.
+ */
+FOUNDATION_EXPORT NSString* _Nonnull TailcatmobileGenerateClientKey(NSError* _Nullable* _Nullable error);
+
+/**
  * StartBridge holds one tailcat session for token and serves the herdr API
 socket on listenPath (plus the derived "-client" socket for attach). It
 returns once the listeners are bound; the bridge runs until StopBridge.
-Calling it again for the same listenPath is a no-op. The token passes as a
-plain argument here — unlike a CLI it never enters a process list.
+Calling it again for the same listenPath is a no-op. clientKey is the
+"privkey:" client identity the host can allowlist, or "" for an ephemeral
+key. The token and key pass as plain arguments here — unlike a CLI they
+never enter a process list.
  */
-FOUNDATION_EXPORT BOOL TailcatmobileStartBridge(NSString* _Nullable token, NSString* _Nullable listenPath, NSError* _Nullable* _Nullable error);
+FOUNDATION_EXPORT BOOL TailcatmobileStartBridge(NSString* _Nullable token, NSString* _Nullable clientKey, NSString* _Nullable listenPath, NSError* _Nullable* _Nullable error);
 
 /**
  * StopBridge tears down the bridge serving listenPath, if any.

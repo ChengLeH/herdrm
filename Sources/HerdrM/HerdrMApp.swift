@@ -252,6 +252,8 @@ struct SettingsView: View {
                 .tabItem { Label("Agents", systemImage: "sparkles") }
             NotificationSettingsView()
                 .tabItem { Label("Notifications", systemImage: "bell") }
+            TailcatSettingsView(model: model)
+                .tabItem { Label("Tailcat", systemImage: "key") }
             AboutSettingsView()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
@@ -591,6 +593,50 @@ struct NotificationSettingsView: View {
     private func refreshAuthorization() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             DispatchQueue.main.async { authorization = settings.authorizationStatus }
+        }
+    }
+}
+
+/// The install's tailcat client identity: the public key hosts allowlist, and
+/// a way to rotate it.
+struct TailcatSettingsView: View {
+    @ObservedObject var model: AppModel
+    @State private var confirmRegenerate = false
+
+    var body: some View {
+        Form {
+            Section {
+                TailcatClientKeyRow(publicKey: model.tailcatClientPublicKey)
+            } header: {
+                Text("Client Public Key")
+            } footer: {
+                Text("Every tailcat device connects with this key. On a host that uses an allow list, add it as one line in `allow.list` under `herdr plugin config-dir herdr.tailcat`, then run `herdr plugin action invoke herdr.tailcat.restart`.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Text("A new key locks this Mac out of every allowlisting host until you update it there.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Regenerate Key…") { confirmRegenerate = true }
+                    .controlSize(.small)
+            }
+        }
+        .padding(20)
+        .onAppear { model.loadTailcatClientPublicKey() }
+        .confirmationDialog(
+            String(localized: "Regenerate the tailcat client key?"),
+            isPresented: $confirmRegenerate
+        ) {
+            Button("Regenerate", role: .destructive) { model.regenerateTailcatClientKey() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every host's allow list must be updated with the new public key. Tailcat devices reconnect now and are rejected by hosts that still list the old key.")
         }
     }
 }

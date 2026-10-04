@@ -347,6 +347,8 @@ struct AddDeviceSheet: View {
     @State private var password = ""
     @State private var tailcatToken = ""
     @State private var copiedKey = false
+    @State private var copiedClientKey = false
+    @State private var confirmRegenerateClientKey = false
 
     private var canAdd: Bool {
         switch kind {
@@ -393,6 +395,7 @@ struct AddDeviceSheet: View {
                     } footer: {
                         Text(String(localized: "From the host: herdr plugin action invoke herdr.tailcat.token — the token is stored in this device's Keychain, and the tunnel needs no SSH."))
                     }
+                    tailcatClientKeySection
                 } else {
                     sshSections
                 }
@@ -424,6 +427,50 @@ struct AddDeviceSheet: View {
                 }
             }
         }
+    }
+
+    /// The app-wide tailcat client key a host's allow list must name.
+    private var tailcatClientKeySection: some View {
+        Section {
+            if let publicKey = model.tailcatClientPublicKey {
+                Text(publicKey)
+                    .font(.system(size: 11, design: .monospaced))
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                Button(copiedClientKey
+                    ? String(localized: "Copied")
+                    : String(localized: "Copy Client Key")
+                ) {
+                    UIPasteboard.general.string = publicKey
+                    copiedClientKey = true
+                }
+            }
+            if let error = model.tailcatClientKeyError {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+            Button(String(localized: "Regenerate Key"), role: .destructive) {
+                confirmRegenerateClientKey = true
+            }
+            .confirmationDialog(
+                String(localized: "Regenerate the client key?"),
+                isPresented: $confirmRegenerateClientKey,
+                titleVisibility: .visible
+            ) {
+                Button(String(localized: "Regenerate Key"), role: .destructive) {
+                    model.regenerateTailcatClientKey()
+                    copiedClientKey = false
+                }
+            } message: {
+                Text(String(localized: "Every host's allow.list must be updated with the new key, and all tailcat devices will reconnect."))
+            }
+        } header: {
+            Text(String(localized: "Client Key"))
+        } footer: {
+            Text(String(localized: "If the host uses an allow list, add this key to allow.list in the folder from herdr plugin config-dir herdr.tailcat (one key per line), then run: herdr plugin action invoke herdr.tailcat.restart. All tailcat devices on this phone share this key."))
+        }
+        .onAppear { model.loadTailcatClientPublicKey() }
     }
 
     @ViewBuilder

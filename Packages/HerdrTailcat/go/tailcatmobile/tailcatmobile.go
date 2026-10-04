@@ -12,16 +12,29 @@ import (
 // StartBridge holds one tailcat session for token and serves the herdr API
 // socket on listenPath (plus the derived "-client" socket for attach). It
 // returns once the listeners are bound; the bridge runs until StopBridge.
-// Calling it again for the same listenPath is a no-op. The token passes as a
-// plain argument here — unlike a CLI it never enters a process list.
-func StartBridge(token, listenPath string) error {
-	_, err := bridge.Start(token, listenPath)
+// Calling it again for the same listenPath is a no-op. clientKey is the
+// "privkey:" client identity the host can allowlist, or "" for an ephemeral
+// key. The token and key pass as plain arguments here — unlike a CLI they
+// never enter a process list.
+func StartBridge(token, clientKey, listenPath string) error {
+	_, err := bridge.Start(token, clientKey, listenPath)
 	return err
 }
 
 // StopBridge tears down the bridge serving listenPath, if any.
 func StopBridge(listenPath string) {
 	bridge.Stop(listenPath)
+}
+
+// GenerateClientKey returns a fresh "privkey:" client key for StartBridge.
+func GenerateClientKey() (string, error) {
+	return bridge.GenerateClientKey()
+}
+
+// ClientPublicKey returns the "nodekey:" public key of a "privkey:" client
+// key — the line the host adds to its allow list.
+func ClientPublicKey(clientKey string) (string, error) {
+	return bridge.ClientPublicKey(clientKey)
 }
 
 // BridgeError reports the most recent asynchronous error (failed warm-up,

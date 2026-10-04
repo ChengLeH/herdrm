@@ -208,6 +208,9 @@ final class AppModel: ObservableObject {
     @Published var terminalToRename: TerminalEntry?
     /// The device whose grazr accounts window is open.
     @Published var grazrAccountsDevice: Device?
+    /// The install's tailcat client public key ("nodekey:…") for hosts' allow
+    /// lists. Loaded on demand, so users without tailcat devices never create one.
+    @Published var tailcatClientPublicKey: String?
     /// Transient action failures: shown as an alert, never by tearing down sessions.
     @Published var actionError: String?
 
@@ -865,6 +868,14 @@ final class AppModel: ObservableObject {
     }
 
     private func stopSession(_ id: UUID) {
+        let service = detachSession(id)
+        Task { await service?.disconnect() }
+    }
+
+    /// Cancels a device's session and drops its state, returning the service
+    /// still to be disconnected. Callers that must order the disconnect before a
+    /// restart await it themselves instead of firing it detached.
+    private func detachSession(_ id: UUID) -> HerdrService? {
         sessionTasks[id]?.cancel()
         sessionTasks[id] = nil
         refreshDebounces[id]?.cancel()
@@ -880,7 +891,7 @@ final class AppModel: ObservableObject {
         let service = services[id]
         services[id] = nil
         sessions[id] = nil
-        Task { await service?.disconnect() }
+        return service
     }
 
     func addDevice(name: String, sshTarget: String) {
@@ -906,6 +917,40 @@ final class AppModel: ObservableObject {
         store.save(devices)
         startSession(device)
         setDeviceFilter(device.id)
+    }
+
+    /// Loads the tailcat client public key, generating the key on first use.
+    func loadTailcatClientPublicKey() {
+        guard tailcatClientPublicKey == nil else { return }
+        do {
+            tailcatClientPublicKey = try TailcatClientKeyStore.publicKey()
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// Replaces the tailcat client key and reconnects every tailcat device so
+    /// its bridge comes back up with the new identity.
+    func regenerateTailcatClientKey() {
+        do {
+            tailcatClientPublicKey = try TailcatClientKeyStore.regenerate()
+        } catch {
+            actionError = error.localizedDescription
+            return
+        }
+        let ids = devices.filter(\.isTailcat).map(\.id)
+        let stale = ids.compactMap { detachSession($0) }
+        Task { [weak self] in
+            // A live bridge is reused as-is by ensureUp, so it must be gone
+            // before the new sessions connect — await the teardown rather than
+            // let stopSession's detached disconnect race the restart.
+            for service in stale { await service.disconnect() }
+            for id in ids { await TailcatBridgeManager.shared.tearDown(deviceID: id) }
+            guard let self else { return }
+            for id in ids {
+                if let device = self.device(id) { self.startSession(device) }
+            }
+        }
     }
 
     func saveSSHPassword(_ password: String, for request: SSHAuthenticationRequest) {

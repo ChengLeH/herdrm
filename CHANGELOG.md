@@ -7,6 +7,8 @@ the Sparkle update description — a release without a section here fails CI.
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-10-03
+
 ### Added
 - The Agents and Terminals headers in the sidebar now have a small New Agent /
   New Terminal button at their right end, like the one by Spaces. You can start

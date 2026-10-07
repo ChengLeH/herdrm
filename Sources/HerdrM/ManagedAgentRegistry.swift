@@ -22,8 +22,13 @@ struct ManagedAgentIntent: Equatable {
     init?(
         json: [String: Any]
     ) {
-        guard let name = json["name"] as? String, !name.isEmpty,
-              let kind = json["kind"] as? String, !kind.isEmpty
+        let optionalFields = ["tab_label", "cwd", "pane_id", "terminal_id", "tab_id", "workspace_id"]
+        guard let name = json["name"] as? String, name.nilIfEmpty != nil,
+              let kind = json["kind"] as? String, kind.nilIfEmpty != nil,
+              optionalFields.allSatisfy({ field in
+                  guard let value = json[field], !(value is NSNull) else { return true }
+                  return (value as? String)?.nilIfEmpty != nil
+              })
         else { return nil }
 
         self.name = name
@@ -33,7 +38,7 @@ struct ManagedAgentIntent: Equatable {
         self.paneID = (json["pane_id"] as? String)?.nilIfEmpty
         self.terminalID = (json["terminal_id"] as? String)?.nilIfEmpty
         self.tabID = (json["tab_id"] as? String)?.nilIfEmpty
-        self.workspaceID = json["workspace_id"] as? String
+        self.workspaceID = (json["workspace_id"] as? String)?.nilIfEmpty
 
     }
 
@@ -216,7 +221,10 @@ struct ManagedAgentRegistry {
                 let terminalMatches = terminal.map(terminalIDs.contains) ?? false
                 let paneMatches = terminal == nil
                     && ((row["pane_id"] as? String).map(paneIDs.contains) ?? false)
-                let nameMatches = (row["name"] as? String).map(names.contains) ?? false
+                // Captured names are only a legacy fallback. A newer terminal
+                // with the same name must survive an older close response.
+                let nameMatches = terminal == nil
+                    && ((row["name"] as? String).map(names.contains) ?? false)
                 return !terminalMatches && !paneMatches && !nameMatches
             }
             guard retained.count != targets.count else { return }
@@ -350,13 +358,21 @@ struct ManagedAgentRemoval {
         self.paneIDs = paneIDs
         self.names = Set(agents.filter { paneIDs.contains($0.paneID) }.compactMap(\.name))
         self.terminalIDs = Set(panes.filter { paneIDs.contains($0.paneID) }.compactMap(\.terminalID))
+            .union(agents.filter { paneIDs.contains($0.paneID) }.compactMap(\.terminalID))
     }
 }
 
 private enum ManagedAgentRegistryStorage {
+    final class PrivateACL {
+        let value: acl_t
+        init(_ value: acl_t) { self.value = value }
+        deinit { Darwin.acl_free(UnsafeMutableRawPointer(value)) }
+    }
+
     struct Snapshot {
         let bytes: Data
         let info: stat
+        let acl: PrivateACL?
     }
 
     static func openParent(_ url: URL, create: Bool) throws -> Int32? {
@@ -386,6 +402,7 @@ private enum ManagedAgentRegistryStorage {
                   info.st_uid == geteuid(), (info.st_mode & 0o022) == 0 else {
                 throw ManagedAgentRegistryError.unsafeStorage
             }
+            try checkPrivateACL(directory)
             return directory
         } catch { Darwin.close(directory); throw error }
     }
@@ -404,6 +421,32 @@ private enum ManagedAgentRegistryStorage {
         (info.st_mode & S_IFMT) == S_IFREG && info.st_uid == geteuid() && info.st_nlink == 1
             && (info.st_mode & 0o077) == 0 && (info.st_mode & 0o111) == 0
             && info.st_size >= 0 && info.st_size <= ManagedAgentRegistry.maximumFileBytes
+    }
+
+    /// POSIX modes do not account for macOS ACL grants or inheritance. Keep
+    /// deny-only ACLs, but fail closed on grants rather than changing user ACLs.
+    @discardableResult
+    static func checkPrivateACL(_ descriptor: Int32) throws -> PrivateACL? {
+        guard let acl = Darwin.acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
+            // Darwin reports ENOENT when this open inode has no extended ACL.
+            if errno == ENOENT { return nil }
+            throw ManagedAgentRegistryError.storageUnavailable
+        }
+        let captured = PrivateACL(acl)
+        guard Darwin.acl_valid(acl) == 0 else { throw ManagedAgentRegistryError.unsafeStorage }
+        var entry: acl_entry_t?
+        var entryID = ACL_FIRST_ENTRY.rawValue
+        while Darwin.acl_get_entry(acl, entryID, &entry) == 0 {
+            var tag = ACL_UNDEFINED_TAG
+            guard let entry, Darwin.acl_get_tag_type(entry, &tag) == 0,
+                  tag == ACL_EXTENDED_DENY else {
+                throw ManagedAgentRegistryError.unsafeStorage
+            }
+            entryID = ACL_NEXT_ENTRY.rawValue
+        }
+        // Darwin uses EINVAL to signal the end of a valid ACL's entries.
+        guard errno == EINVAL else { throw ManagedAgentRegistryError.storageUnavailable }
+        return captured
     }
 
     static func sameIdentity(_ left: stat, _ right: stat) -> Bool {
@@ -428,6 +471,7 @@ private enum ManagedAgentRegistryStorage {
         guard Darwin.fstat(descriptor, &before) == 0, validFile(before) else {
             throw ManagedAgentRegistryError.unsafeStorage
         }
+        let capturedACL = try checkPrivateACL(descriptor)
         var bytes = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
@@ -446,7 +490,8 @@ private enum ManagedAgentRegistryStorage {
               validFile(named), unchanged(after, named), bytes.count == before.st_size else {
             throw ManagedAgentRegistryError.storageChanged
         }
-        return Snapshot(bytes: bytes, info: after)
+        try checkPrivateACL(descriptor)
+        return Snapshot(bytes: bytes, info: after, acl: capturedACL)
     }
 
     static func lock(name: String, parent: Int32) throws -> Int32 {
@@ -457,6 +502,7 @@ private enum ManagedAgentRegistryStorage {
             guard Darwin.fstat(descriptor, &held) == 0, validFile(held), held.st_size == 0 else {
                 throw ManagedAgentRegistryError.unsafeStorage
             }
+            try checkPrivateACL(descriptor)
             // Writes fail closed on contention rather than block the UI indefinitely.
             if managedAgentFlock(descriptor, LOCK_EX | LOCK_NB) != 0 {
                 throw ManagedAgentRegistryError.storageUnavailable
@@ -477,6 +523,7 @@ private enum ManagedAgentRegistryStorage {
               validFile(named), sameIdentity(held, named) else {
             throw ManagedAgentRegistryError.storageChanged
         }
+        try checkPrivateACL(descriptor)
     }
 
     static func commit(
@@ -498,6 +545,16 @@ private enum ManagedAgentRegistryStorage {
                sameIdentity(created, named) { _ = Darwin.unlinkat(parent, temporary, 0) }
         }
         guard Darwin.fchmod(descriptor, 0o600) == 0 else { throw ManagedAgentRegistryError.storageUnavailable }
+        try checkPrivateACL(descriptor)
+        // Keep the original inode's deny rules across atomic replacement.
+        // Validate inherited ACLs first: unsafe grants must never be stripped
+        // silently to make an otherwise unsafe location appear acceptable.
+        if let originalACL = original?.acl {
+            guard Darwin.acl_set_fd_np(descriptor, originalACL.value, ACL_TYPE_EXTENDED) == 0 else {
+                throw ManagedAgentRegistryError.storageUnavailable
+            }
+            try checkPrivateACL(descriptor)
+        }
         let written = data.withUnsafeBytes { buffer -> Bool in
             var offset = 0
             while offset < buffer.count {
@@ -524,6 +581,7 @@ private enum ManagedAgentRegistryStorage {
         guard Darwin.fstat(descriptor, &held) == 0, validFile(held), held.st_size == data.count,
               Darwin.fstatat(parent, temporary, &named, AT_SYMLINK_NOFOLLOW) == 0,
               validFile(named), sameIdentity(held, named) else { throw ManagedAgentRegistryError.storageChanged }
+        try checkPrivateACL(descriptor)
         // Cooperating writers are serialized by the separate write lock. CAS
         // above also detects external changes before the atomic replacement.
         let renamed: Int32

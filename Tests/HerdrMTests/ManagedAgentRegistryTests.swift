@@ -3,6 +3,9 @@ import XCTest
 import HerdrKit
 @testable import herdrm
 
+@_silgen_name("flock")
+private func identityTestFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
+
 final class ManagedAgentRegistryTests: XCTestCase {
     private func temporaryRegistryURL() throws -> URL {
         // Foundation resolves /private/var back to /var on macOS; /var is a
@@ -11,13 +14,179 @@ final class ManagedAgentRegistryTests: XCTestCase {
             .appendingPathComponent("herdrm-managed-agent-registry-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700])
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        addTeardownBlock {
+            // Only this test's synthetic directory can contain a deny-delete ACL.
+            let cleanup = Process()
+            cleanup.executableURL = URL(fileURLWithPath: "/bin/chmod")
+            cleanup.arguments = ["-RN", root.path]
+            if (try? cleanup.run()) != nil { cleanup.waitUntilExit() }
+            try? FileManager.default.removeItem(at: root)
+        }
         return root.appendingPathComponent("agent-reconcile.json")
     }
 
     private func writePrivate(_ bytes: Data, to url: URL) throws {
         try bytes.write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func addACL(_ rule: String, to url: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        process.arguments = ["+a", rule, url.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+    }
+
+    private func aclText(at url: URL) throws -> String {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw ManagedAgentRegistryError.storageUnavailable }
+        defer { Darwin.close(descriptor) }
+        let acl = try XCTUnwrap(Darwin.acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED))
+        defer { Darwin.acl_free(UnsafeMutableRawPointer(acl)) }
+        var length = 0
+        let text = try XCTUnwrap(Darwin.acl_to_text(acl, &length))
+        defer { Darwin.acl_free(text) }
+        return String(cString: text)
+    }
+
+    func testMalformedOwnedFieldsCannotDowngradeToLegacyMatchingOrReplaceData() throws {
+        let fields = ["name", "kind", "tab_label", "cwd", "pane_id", "tab_id", "terminal_id", "workspace_id"]
+        for field in fields {
+            for invalid: Any in [123, true, ["invalid": true], " \n"] {
+                let url = try temporaryRegistryURL()
+                var row: [String: Any] = ["name": "saved_agent", "kind": "future-kind",
+                    "pane_id": "w1:p1", "cwd": "/tmp/project", "terminal_id": "original-terminal"]
+                row[field] = invalid
+                let bytes = try JSONSerialization.data(withJSONObject: ["version": 1, "targets": [row]])
+                try writePrivate(bytes, to: url)
+                let registry = ManagedAgentRegistry(fileURL: url)
+                XCTAssertThrowsError(try registry.load(), field)
+                XCTAssertThrowsError(try registry.upsert(intent()), field)
+                XCTAssertEqual(try Data(contentsOf: url), bytes)
+                XCTAssertNil(ManagedAgentIntent(json: row), "Malformed identity must not reach projection")
+            }
+        }
+    }
+
+    func testNullOptionalFieldsRemainCompatibleWithLegacyRecords() throws {
+        let url = try temporaryRegistryURL()
+        let row: [String: Any] = ["name": "saved_agent", "kind": "future-kind",
+            "pane_id": "w1:p1", "cwd": "/tmp/project", "terminal_id": NSNull(),
+            "workspace_id": NSNull(), "tab_label": NSNull(), "tab_id": NSNull()]
+        try writePrivate(JSONSerialization.data(withJSONObject: ["version": 1, "targets": [row]]), to: url)
+        let saved = try XCTUnwrap(ManagedAgentRegistry(fileURL: url).load().first)
+        XCTAssertNil(saved.terminalID)
+        XCTAssertEqual(saved.matchingPane(in: [try pane()], tabs: [try tab()])?.paneID, "w1:p1")
+    }
+
+    func testGrantACLOnExistingRegistryIsRejectedWithoutChangingDataOrPermissions() throws {
+        for permission in ["read", "write"] {
+            let url = try temporaryRegistryURL()
+            let registry = ManagedAgentRegistry(fileURL: url)
+            try registry.upsert(intent())
+            let bytes = try Data(contentsOf: url)
+            try addACL("everyone allow " + permission, to: url)
+            XCTAssertThrowsError(try registry.load())
+            XCTAssertThrowsError(try registry.upsert(intent(name: "new_agent")))
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        }
+    }
+
+    func testInheritedGrantACLPreventsNewRegistryCreation() throws {
+        let url = try temporaryRegistryURL()
+        let parent = url.deletingLastPathComponent()
+        try addACL("everyone allow read,search,file_inherit,directory_inherit", to: parent)
+        let registry = ManagedAgentRegistry(fileURL: url)
+        XCTAssertThrowsError(try registry.load())
+        XCTAssertThrowsError(try registry.upsert(intent()))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
+    }
+
+    func testDenyOnlyACLDoesNotWeakenOrPreventPrivateStorage() throws {
+        let url = try temporaryRegistryURL()
+        let registry = ManagedAgentRegistry(fileURL: url)
+        try addACL("everyone deny delete", to: url.deletingLastPathComponent())
+        try registry.upsert(intent())
+        try addACL("everyone deny execute", to: url)
+        try addACL("everyone deny writesecurity", to: url)
+        let before = try aclText(at: url)
+        XCTAssertEqual(try registry.load().first?.name, "saved_agent")
+        try registry.upsert(intent(name: "renamed_agent"))
+        XCTAssertEqual(try registry.load().first?.name, "renamed_agent")
+        XCTAssertEqual(try aclText(at: url), before, "Atomic replacement must preserve all original deny rules")
+        try ManagedAgentRegistry(fileURL: url).upsert(intent(name: "saved_again"))
+        XCTAssertEqual(try aclText(at: url), before, "Repeated writes must not accumulate ACL entries")
+    }
+
+    func testGrantACLOnLockIsRejected() throws {
+        let url = try temporaryRegistryURL()
+        let registry = ManagedAgentRegistry(fileURL: url)
+        try registry.upsert(intent())
+        let bytes = try Data(contentsOf: url)
+        let lock = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".write.lock")
+        try addACL("everyone allow write", to: lock)
+        XCTAssertThrowsError(try registry.upsert(intent(name: "new_agent")))
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+    }
+
+    func testContendedLockFailsWithoutReplacingRegistryOrCreatingTemporaryData() throws {
+        let url = try temporaryRegistryURL()
+        let registry = ManagedAgentRegistry(fileURL: url)
+        try registry.upsert(intent())
+        let bytes = try Data(contentsOf: url)
+        let lockURL = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".write.lock")
+        let lock = Darwin.open(lockURL.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(lock, 0)
+        defer { Darwin.close(lock) }
+        XCTAssertEqual(identityTestFlock(lock, LOCK_EX | LOCK_NB), 0)
+        XCTAssertThrowsError(try registry.upsert(intent(name: "new_agent")))
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+            .contains { $0.hasPrefix(".agent-registry-") })
+    }
+
+    func testReplacedLockDuringSaveDoesNotAuthorizeCommit() throws {
+        let url = try temporaryRegistryURL()
+        try ManagedAgentRegistry(fileURL: url).upsert(intent())
+        let bytes = try Data(contentsOf: url)
+        let parent = url.deletingLastPathComponent()
+        let registry = ManagedAgentRegistry(fileURL: url, beforeCommit: {
+            let lock = parent.appendingPathComponent(url.lastPathComponent + ".write.lock")
+            try FileManager.default.moveItem(at: lock, to: parent.appendingPathComponent("previous-lock"))
+            try self.writePrivate(Data(), to: lock)
+        })
+        XCTAssertThrowsError(try registry.upsert(intent(name: "new_agent")))
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: parent.path)
+            .contains { $0.hasPrefix(".agent-registry-") })
+    }
+
+    func testGrantACLAddedDuringSaveIsRejectedAndTemporaryFileIsCleaned() throws {
+        for target in ["temporary", "lock", "parent"] {
+            let url = try temporaryRegistryURL()
+            try ManagedAgentRegistry(fileURL: url).upsert(intent())
+            let bytes = try Data(contentsOf: url)
+            let parent = url.deletingLastPathComponent()
+            let registry = ManagedAgentRegistry(fileURL: url, beforeCommit: {
+                let destination: URL
+                switch target {
+                case "temporary":
+                    let temporary = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: parent.path)
+                        .first { $0.hasPrefix(".agent-registry-") })
+                    destination = parent.appendingPathComponent(temporary)
+                case "lock": destination = parent.appendingPathComponent(url.lastPathComponent + ".write.lock")
+                default: destination = parent
+                }
+                try self.addACL("everyone allow read", to: destination)
+            })
+            XCTAssertThrowsError(try registry.upsert(intent(name: "new_agent")), target)
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: parent.path)
+                .contains { $0.hasPrefix(".agent-registry-") })
+        }
     }
 
     func testSavedUndetectedAgentAttachesToItsExistingTerminal() throws {
@@ -278,6 +447,29 @@ final class ManagedAgentRegistryTests: XCTestCase {
         let removal = ManagedAgentRemoval(paneIDs: [live.paneID], agents: [], panes: livePanes)
         livePanes.removeAll() // A server event arrives before close RPC returns.
         XCTAssertTrue(livePanes.isEmpty)
+        try registry.remove(paneIDs: removal.paneIDs, names: removal.names, terminalIDs: removal.terminalIDs)
+        XCTAssertTrue(try registry.load().isEmpty)
+    }
+
+    func testCapturedCloseDoesNotRemoveSameNameReplacementTerminal() throws {
+        let registry = ManagedAgentRegistry(fileURL: try temporaryRegistryURL())
+        let live = try pane(terminalID: "original-terminal")
+        let agent = try decode(AgentInfo.self, ["pane_id": live.paneID, "tab_id": "w1:t1",
+            "workspace_id": "w1", "terminal_id": "original-terminal", "name": "saved_agent"])
+        let removal = ManagedAgentRemoval(paneIDs: [live.paneID], agents: [agent], panes: [live])
+        try registry.upsert(intent().rebound(to: live, tab: try tab()))
+        let replacement = try pane(terminalID: "replacement-terminal")
+        try registry.upsert(intent().rebound(to: replacement, tab: try tab()))
+        try registry.remove(paneIDs: removal.paneIDs, names: removal.names, terminalIDs: removal.terminalIDs)
+        XCTAssertEqual(try registry.load().first?.terminalID, "replacement-terminal")
+    }
+
+    func testCapturedCloseUsesAgentTerminalWhenPaneSnapshotIsMissing() throws {
+        let registry = ManagedAgentRegistry(fileURL: try temporaryRegistryURL())
+        try registry.upsert(intent().rebound(to: try pane(), tab: try tab()))
+        let agent = try decode(AgentInfo.self, ["pane_id": "w1:p1", "tab_id": "w1:t1",
+            "workspace_id": "w1", "terminal_id": "term-w1:p1", "name": "saved_agent"])
+        let removal = ManagedAgentRemoval(paneIDs: [agent.paneID], agents: [agent], panes: [])
         try registry.remove(paneIDs: removal.paneIDs, names: removal.names, terminalIDs: removal.terminalIDs)
         XCTAssertTrue(try registry.load().isEmpty)
     }
